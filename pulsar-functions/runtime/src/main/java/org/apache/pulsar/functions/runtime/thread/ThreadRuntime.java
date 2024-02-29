@@ -48,6 +48,7 @@ import org.apache.pulsar.functions.worker.FunctionsManager;
 
 /**
  * A function container implemented using java thread.
+ * 每个function包含一个实现的java线程
  */
 @Slf4j
 public class ThreadRuntime implements Runtime {
@@ -196,16 +197,19 @@ public class ThreadRuntime implements Runtime {
     public void start() throws Exception {
 
         // extract class loader for function
+        // 获取当前function的类加载器
         ClassLoader functionClassLoader =
                 getFunctionClassLoader(instanceConfig, instanceConfig.getFunctionId(), jarFile, narExtractionDirectory,
                         fnCache, connectorsManager, functionsManager,
                         InstanceUtils.calculateSubjectType(instanceConfig.getFunctionDetails()));
 
+        //??
         ClassLoader transformFunctionClassLoader = transformFunctionFile == null ? null : getFunctionClassLoader(
                 instanceConfig, instanceConfig.getTransformFunctionId(), transformFunctionFile, narExtractionDirectory,
                 fnCache, connectorsManager, functionsManager, Function.FunctionDetails.ComponentType.FUNCTION);
 
         // re-initialize JavaInstanceRunnable so that variables in constructor can be re-initialized
+        // Function的真正需要调用的逻辑
         this.javaInstanceRunnable = new JavaInstanceRunnable(
                 instanceConfig,
                 clientBuilder,
