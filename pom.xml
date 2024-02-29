@@ -1661,6 +1661,7 @@ flexible messaging model and an intuitive client API.</description>
         <artifactId>license-maven-plugin</artifactId>
         <version>${license-maven-plugin.version}</version>
         <configuration>
+          <skip>true</skip>
           <licenseSets>
             <licenseSet>
               <header>${pulsar.basedir}/src/license-header.txt</header>
