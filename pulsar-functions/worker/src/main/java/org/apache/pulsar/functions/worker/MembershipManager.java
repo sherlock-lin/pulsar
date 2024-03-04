@@ -112,6 +112,7 @@ public class MembershipManager implements AutoCloseable {
 
     }
 
+    //TODO 可以通过门面设计模式重构下
     public void checkFailures(FunctionMetaDataManager functionMetaDataManager,
                               FunctionRuntimeManager functionRuntimeManager,
                               SchedulerManager schedulerManager) {
@@ -132,6 +133,7 @@ public class MembershipManager implements AutoCloseable {
         long currentTimeMs = System.currentTimeMillis();
 
         // remove functions
+        // 如果在FunctionMetaDataManager获取的元数据已经不存在这里了，那么就删除
         Iterator<Map.Entry<Function.Instance, Long>> it = unsignedFunctionDurations.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry<Function.Instance, Long> entry = it.next();
@@ -155,6 +157,7 @@ public class MembershipManager implements AutoCloseable {
         }
 
         // check for function instances that haven't been assigned
+        // 检查是否存在未被分配的function instances
         for (Function.FunctionMetaData functionMetaData : functionMetaDataList) {
             Collection<Function.Assignment> assignments =
                     FunctionRuntimeManager.findFunctionAssignments(functionMetaData.getFunctionDetails().getTenant(),
@@ -179,6 +182,7 @@ public class MembershipManager implements AutoCloseable {
         }
 
         // check failed nodes
+        // 通过心跳检查执行失败的节点
         for (Map.Entry<String, Map<String, Function.Assignment>> entry : currentAssignments.entrySet()) {
             String workerId = entry.getKey();
             Map<String, Function.Assignment> assignmentEntries = entry.getValue();
@@ -196,6 +200,7 @@ public class MembershipManager implements AutoCloseable {
             }
         }
 
+        //获取需要触发重新调度的节点
         boolean triggerScheduler = false;
         // check unassigned
         Collection<Function.Instance> needSchedule = new LinkedList<>();

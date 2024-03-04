@@ -358,7 +358,9 @@ public class SchedulerManager implements AutoCloseable {
 
         Set<String> availableWorkers = getCurrentAvailableWorkers();
 
+        //获取所有Function
         List<FunctionMetaData> allFunctions = functionMetaDataManager.getAllFunctionMetaData();
+        //获取所有Instance
         Map<String, Function.Instance> allInstances =
                 computeAllInstances(allFunctions, functionRuntimeManager.getRuntimeFactory().externallyManaged());
         Map<String, Map<String, Assignment>> workerIdToAssignments = functionRuntimeManager

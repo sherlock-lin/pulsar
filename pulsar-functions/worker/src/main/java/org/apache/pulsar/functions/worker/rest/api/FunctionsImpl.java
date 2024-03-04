@@ -87,6 +87,7 @@ public class FunctionsImpl extends ComponentImpl implements Functions<PulsarWork
             throwUnavailableException();
         }
 
+        //TODO 可考虑进行参数校验优化
         if (tenant == null) {
             throw new RestException(Response.Status.BAD_REQUEST, "Tenant is not provided");
         }
