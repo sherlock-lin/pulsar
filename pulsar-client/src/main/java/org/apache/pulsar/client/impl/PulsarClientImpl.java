@@ -111,6 +111,7 @@ public class PulsarClientImpl implements PulsarClient {
     @Getter
     private final Timer timer;
     private boolean needStopTimer;
+    //这两个线程池看起来怎么都是消费者在使用？
     private final ExecutorProvider externalExecutorProvider;
     private final ExecutorProvider internalExecutorProvider;
 
@@ -176,7 +177,9 @@ public class PulsarClientImpl implements PulsarClient {
                              Timer timer, ExecutorProvider externalExecutorProvider,
                              ExecutorProvider internalExecutorProvider,
                              ScheduledExecutorProvider scheduledExecutorProvider) throws PulsarClientException {
+        //专门处理任务的线程池
         EventLoopGroup eventLoopGroupReference = null;
+        //连接池，内置Netty客户端
         ConnectionPool connectionPoolReference = null;
         try {
             this.createdEventLoopGroup = eventLoopGroup == null;
@@ -198,12 +201,16 @@ public class PulsarClientImpl implements PulsarClient {
             connectionPoolReference =
                     connectionPool != null ? connectionPool : new ConnectionPool(conf, this.eventLoopGroup);
             this.cnxPool = connectionPoolReference;
+            //如果用户不传入自定义的线程池，则初始化初始化一个默认的
             this.externalExecutorProvider = externalExecutorProvider != null ? externalExecutorProvider :
                     new ExecutorProvider(conf.getNumListenerThreads(), "pulsar-external-listener");
+            //如果用户不传入自定义的线程池，则初始化初始化一个默认的。internalExecutorProvider和externalExecutorProvider区别是？
             this.internalExecutorProvider = internalExecutorProvider != null ? internalExecutorProvider :
                     new ExecutorProvider(conf.getNumIoThreads(), "pulsar-client-internal");
+            //如果用户不传入自定义的线程池，则初始化初始化一个默认的
             this.scheduledExecutorProvider = scheduledExecutorProvider != null ? scheduledExecutorProvider :
                     new ScheduledExecutorProvider(conf.getNumIoThreads(), "pulsar-client-scheduled");
+            //初始化LookupService服务
             if (conf.getServiceUrl().startsWith("http")) {
                 lookup = new HttpLookupService(conf, this.eventLoopGroup);
             } else {
@@ -211,12 +218,14 @@ public class PulsarClientImpl implements PulsarClient {
                         conf.isUseTls(), this.scheduledExecutorProvider.getExecutor());
             }
             if (timer == null) {
+                //初始化计数器
                 this.timer = new HashedWheelTimer(getThreadFactory("pulsar-timer"), 1, TimeUnit.MILLISECONDS);
                 needStopTimer = true;
             } else {
                 this.timer = timer;
             }
 
+            //判断是否开启了事务，开启的话则创建事务客户端对象
             if (conf.isEnableTransaction()) {
                 tcClient = new TransactionCoordinatorClientImpl(this);
                 try {
@@ -227,6 +236,7 @@ public class PulsarClientImpl implements PulsarClient {
                 }
             }
 
+            //创建客户端内存控制器
             memoryLimitController = new MemoryLimitController(conf.getMemoryLimitBytes(),
                     (long) (conf.getMemoryLimitBytes() * THRESHOLD_FOR_CONSUMER_RECEIVER_QUEUE_SIZE_SHRINKING),
                     this::reduceConsumerReceiverQueueSize);

@@ -141,6 +141,7 @@ public class OpAddEntry implements AddCallback, CloseCallback, Runnable {
                     }
                 }
             }
+            // 这里的ledger不是上面的了managedLeader对象，是LedgerHandle，用于和BK交互的客户端
             ledger.asyncAddEntry(duplicateBuffer, this, addOpCount);
         } else {
             log.warn("[{}] initiate with unexpected state {}, expect OPEN state.", ml.getName(), state);

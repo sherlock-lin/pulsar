@@ -104,6 +104,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
     protected final long producerId;
 
     // Variable is updated in a synchronized block
+    // 消息ID唯一标识生成器
     private volatile long msgIdGenerator;
 
     private final OpSendMsgQueue pendingMessages;
@@ -2232,6 +2233,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 // If we do have a connection, the message is sent immediately, otherwise we'll try again once a new
                 // connection is established
                 op.cmd.retain();
+                //WriteInEventLoopCallback方法的run方法执行会将数据发送出去，然后队列中维护消息的状态
                 cnx.ctx().channel().eventLoop().execute(WriteInEventLoopCallback.create(this, cnx, op));
                 stats.updateNumMsgsSent(op.numMessagesInBatch, op.batchSizeByte);
             } else {

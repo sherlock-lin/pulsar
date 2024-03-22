@@ -774,6 +774,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
 
         // Jump to specific thread to avoid contention from writers writing from different threads
         executor.execute(() -> {
+            // 封装到OpAddEntry，同时也是回调函数
             OpAddEntry addOperation = OpAddEntry.createNoRetainBuffer(this, buffer, callback, ctx);
             internalAsyncAddEntry(addOperation);
         });
@@ -795,7 +796,9 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         });
     }
 
+    // 这里是加了锁的，因为有很多属性指标统计例如entrie数，ledger大小等都有线程安全问题
     protected synchronized void internalAsyncAddEntry(OpAddEntry addOperation) {
+        //如果配置了Ledger拦截器则在这里生效
         if (!beforeAddEntry(addOperation)) {
             return;
         }
@@ -813,6 +816,8 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             addOperation.failed(new ManagedLedgerAlreadyClosedException("Waiting to recover from failure"));
             return;
         }
+
+        // 等待队列中添加的Entry bk插入成功回调中删除
         pendingAddEntries.add(addOperation);
 
         if (state == State.ClosingLedger || state == State.CreatingLedger) {
@@ -841,9 +846,12 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             checkArgument(state == State.LedgerOpened, "ledger=%s is not opened", state);
 
             // Write into lastLedger
+            //设置当前要写入的Ledger
             addOperation.setLedger(currentLedger);
 
+            // 统计新增的Entries数，可以发现批量也是+1，而不是拆开，因为批量就是一个消息作为整体，只是内部有多个
             ++currentLedgerEntries;
+            // 增加ledger总字节数
             currentLedgerSize += addOperation.data.readableBytes();
 
             if (log.isDebugEnabled()) {
@@ -851,6 +859,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                         currentLedgerEntries);
             }
 
+            // 如果ledger总entry数超过配置或者ledger大小或者滚动时间到了都会关闭ledger切换新ledger
             if (currentLedgerIsFull()) {
                 if (log.isDebugEnabled()) {
                     log.debug("[{}] Closing current ledger lh={}", name, currentLedger.getId());
@@ -859,6 +868,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 addOperation.setCloseWhenDone(true);
                 STATE_UPDATER.set(this, State.ClosingLedger);
             }
+            //初始化OpAddEntry
             addOperation.initiate();
         }
         // mark add entry activity

@@ -195,6 +195,7 @@ public class Producer {
 
     public void publishMessage(long producerId, long lowestSequenceId, long highestSequenceId,
             ByteBuf headersAndPayload, long batchSize, boolean isChunked, boolean isMarker, Position position) {
+        //如果最小的消息ID比最大的大则此批量发送肯定有问题
         if (lowestSequenceId > highestSequenceId) {
             cnx.execute(() -> {
                 cnx.getCommandSender().sendSendError(producerId, highestSequenceId, ServerError.MetadataError,
@@ -203,7 +204,9 @@ public class Producer {
             });
             return;
         }
+        //验证消息的完整性、加密、统计发送速率用于限流
         if (checkAndStartPublish(producerId, highestSequenceId, headersAndPayload, batchSize, position)) {
+            //进行消息发送
             publishMessageToTopic(headersAndPayload, lowestSequenceId, highestSequenceId, batchSize, isChunked,
                     isMarker, position);
         }
@@ -285,9 +288,11 @@ public class Producer {
                 highestSequenceId, msgIn, headersAndPayload.readableBytes(), batchSize,
                 isChunked, System.nanoTime(), isMarker, position);
         if (brokerInterceptor != null) {
+            //如果配置了拦截器规则，则调用拦截器对进来的消息进行处理
             brokerInterceptor
                     .onMessagePublish(this, headersAndPayload, messagePublishContext);
         }
+        // MessagePublishContext 把发送的参数都放入到这个请求上下文对象，同时它也是发送的回调函数
         topic.publishMessage(headersAndPayload, messagePublishContext);
     }
 

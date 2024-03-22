@@ -106,6 +106,7 @@ public class ConnectionPool implements AutoCloseable {
         this.isSniProxy = clientConfig.isUseTls() && clientConfig.getProxyProtocol() != null
                 && StringUtils.isNotBlank(clientConfig.getProxyServiceUrl());
 
+        //启动Netty客户端
         pool = new ConcurrentHashMap<>();
         bootstrap = new Bootstrap();
         bootstrap.group(eventLoopGroup);

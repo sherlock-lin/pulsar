@@ -356,6 +356,7 @@ public class SchedulerManager implements AutoCloseable {
     void invokeScheduler() {
         long startTime = System.nanoTime();
 
+        //获取当前worker集群中可用的worker节点信息
         Set<String> availableWorkers = getCurrentAvailableWorkers();
 
         //获取所有Function
@@ -363,10 +364,11 @@ public class SchedulerManager implements AutoCloseable {
         //获取所有Instance
         Map<String, Function.Instance> allInstances =
                 computeAllInstances(allFunctions, functionRuntimeManager.getRuntimeFactory().externallyManaged());
+        //获取当前每个 workerId->(InstanceId—>任务)
         Map<String, Map<String, Assignment>> workerIdToAssignments = functionRuntimeManager
                 .getCurrentAssignments();
 
-        // initialize stats collection
+        // 初始化调度状态记录器
         SchedulerStats schedulerStats = new SchedulerStats(workerIdToAssignments, availableWorkers);
 
         //delete assignments of functions and instances that don't exist anymore
@@ -388,7 +390,7 @@ public class SchedulerManager implements AutoCloseable {
                     functionRuntimeManager.deleteAssignment(fullyQualifiedInstanceId);
                     // update message id associated with current view of assignments map
                     lastMessageProduced = messageId;
-                    // update stats
+                    // 更新状态
                     schedulerStats.removedAssignment(assignment);
                 }
                 return deleted;
@@ -431,10 +433,12 @@ public class SchedulerManager implements AutoCloseable {
                 .flatMap(stringMapEntry -> stringMapEntry.getValue().values().stream())
                 .collect(Collectors.toList());
 
+        //获取未分配的Function任务
         Pair<List<Function.Instance>, List<Assignment>> unassignedInstances =
                 getUnassignedFunctionInstances(workerIdToAssignments, allInstances);
 
         workerStatsManager.scheduleStrategyExecTimeStartStart();
+        //触发任务真正调度派发的入口
         List<Assignment> assignments =
                 scheduler.schedule(unassignedInstances.getLeft(), currentAssignments, availableWorkers);
         workerStatsManager.scheduleStrategyExecTimeStartEnd();
@@ -447,6 +451,7 @@ public class SchedulerManager implements AutoCloseable {
 
         isCompactionNeeded.set(!assignments.isEmpty());
 
+        //更新到Leader内存中的元数据
         for (Assignment assignment : assignments) {
             MessageId messageId = publishNewAssignment(assignment, false);
 
@@ -467,11 +472,13 @@ public class SchedulerManager implements AutoCloseable {
     private void invokeRebalance() {
         long startTime = System.nanoTime();
 
+        //获取可用的worker节点
         Set<String> availableWorkers = getCurrentAvailableWorkers();
 
+        //获取当前的任务
         Map<String, Map<String, Assignment>> workerIdToAssignments = functionRuntimeManager.getCurrentAssignments();
 
-        // initialize stats collection
+        // 初始化状态记录
         SchedulerStats schedulerStats = new SchedulerStats(workerIdToAssignments, availableWorkers);
 
         // filter out assignments of workers that are not currently in the active membership
@@ -711,6 +718,7 @@ public class SchedulerManager implements AutoCloseable {
         return functionInstances;
     }
 
+    //获取未分配的Function任务
     private Pair<List<Function.Instance>, List<Assignment>> getUnassignedFunctionInstances(
             Map<String, Map<String, Assignment>> currentAssignments, Map<String, Function.Instance> functionInstances) {
 
@@ -726,6 +734,7 @@ public class SchedulerManager implements AutoCloseable {
         for (Map.Entry<String, Function.Instance> instanceEntry : functionInstances.entrySet()) {
             String fullyQualifiedInstanceId = instanceEntry.getKey();
             Function.Instance instance = instanceEntry.getValue();
+            //获取这些实例的心跳信息
             String heartBeatWorkerId = checkHeartBeatFunction(instance);
             if (heartBeatWorkerId != null) {
                 heartBeatAssignments

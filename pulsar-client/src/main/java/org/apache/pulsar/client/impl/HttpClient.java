@@ -63,6 +63,7 @@ public class HttpClient implements Closeable {
     protected static final int DEFAULT_CONNECT_TIMEOUT_IN_SECONDS = 10;
     protected static final int DEFAULT_READ_TIMEOUT_IN_SECONDS = 30;
 
+    //TODO 存在命名歧义，可能会错误以为httpClient是HttpClient类的引用
     protected final AsyncHttpClient httpClient;
     protected final ServiceNameResolver serviceNameResolver;
     protected final Authentication authentication;

@@ -521,25 +521,32 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
 
     @Override
     public void publishMessage(ByteBuf headersAndPayload, PublishContext publishContext) {
+        // 等待发送的消息数+1，减1正常是在发送成功的回调里
         pendingWriteOps.incrementAndGet();
+        // 如果Topic被删除则清理Topic相关资源，例如跟Topic关联的所有客户端断开连接，关闭当前Ledger等
         if (isFenced) {
             publishContext.completed(new TopicFencedException("fenced"), -1, -1);
             decrementPendingWriteOpsAndCheck();
             return;
         }
+
+        //校验消息是否超过配置的最大值
         if (isExceedMaximumMessageSize(headersAndPayload.readableBytes(), publishContext)) {
             publishContext.completed(new NotAllowedException("Exceed maximum message size"), -1, -1);
             decrementPendingWriteOpsAndCheck();
             return;
         }
 
+        //判断消息是否重复
         MessageDeduplication.MessageDupStatus status =
                 messageDeduplication.isDuplicate(publishContext, headersAndPayload);
         switch (status) {
             case NotDup:
+                // 写消息
                 asyncAddEntry(headersAndPayload, publishContext);
                 break;
             case Dup:
+                // 立刻告知客户端消息重复
                 // Immediately acknowledge duplicated message
                 publishContext.completed(null, -1, -1);
                 decrementPendingWriteOpsAndCheck();
@@ -570,6 +577,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     }
 
     private void asyncAddEntry(ByteBuf headersAndPayload, PublishContext publishContext) {
+        //判断是否有Broker元数据拦截器
         if (brokerService.isBrokerEntryMetadataEnabled()) {
             ledger.asyncAddEntry(headersAndPayload,
                     (int) publishContext.getNumberOfMessages(), this, publishContext);

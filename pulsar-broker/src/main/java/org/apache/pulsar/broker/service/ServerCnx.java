@@ -1429,6 +1429,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             return;
         }
 
+        //通过配置决定是否开启
         CompletableFuture<Boolean> isAuthorizedFuture = isTopicOperationAllowed(
                 topicName, TopicOperation.PRODUCE, authenticationData, originalAuthData
         );
@@ -1765,7 +1766,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
     @Override
     protected void handleSend(CommandSend send, ByteBuf headersAndPayload) {
         checkArgument(state == State.Connected);
-
+        // 生产者启动时会连接Broker，Broker端会创建与之对应的Producer对象来维护在producers这个Map中
         CompletableFuture<Producer> producerFuture = producers.get(send.getProducerId());
 
         if (producerFuture == null || !producerFuture.isDone() || producerFuture.isCompletedExceptionally()) {
@@ -1803,6 +1804,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
         if (producer.isNonPersistentTopic()) {
             // avoid processing non-persist message if reached max concurrent-message limit
+            // 校验非持久化的等待消息数是否超过最大值默认1000
             if (nonPersistentPendingMessages > maxNonPersistentPendingMessages) {
                 final long producerId = send.getProducerId();
                 final long sequenceId = send.getSequenceId();
@@ -1832,10 +1834,14 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 ? PositionImpl.get(send.getMessageId().getLedgerId(), send.getMessageId().getEntryId()) : null;
 
         // Persist the message
+        // 客户端会批量发送，一批里每个消息SequenceId都不一样(一批也可能只有一条)，有大有小
+        // 一批中最大那个是highestSequenceId，最小的是lowestSequenceId，在这里最小的也是send.getSequenceId()
         if (send.hasHighestSequenceId() && send.getSequenceId() <= send.getHighestSequenceId()) {
+            //批量发送
             producer.publishMessage(send.getProducerId(), send.getSequenceId(), send.getHighestSequenceId(),
                     headersAndPayload, send.getNumMessages(), send.isIsChunk(), send.isMarker(), position);
         } else {
+            //单条发送
             producer.publishMessage(send.getProducerId(), send.getSequenceId(), headersAndPayload,
                     send.getNumMessages(), send.isIsChunk(), send.isMarker(), position);
         }
