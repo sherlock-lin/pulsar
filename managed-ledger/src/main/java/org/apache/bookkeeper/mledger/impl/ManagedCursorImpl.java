@@ -118,6 +118,7 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         return 0;
     };
+    // 利用bk来做游标的持久化
     protected final BookKeeper bookkeeper;
     protected final ManagedLedgerConfig config;
     protected final ManagedLedgerImpl ledger;
@@ -128,6 +129,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     private volatile Map<String, String> cursorProperties;
     private final BookKeeper.DigestType digestType;
 
+    //记录消息可删除的位置
     protected volatile PositionImpl markDeletePosition;
 
     // this position is have persistent mark delete position
@@ -140,6 +142,8 @@ public class ManagedCursorImpl implements ManagedCursor {
 
     protected static final AtomicReferenceFieldUpdater<ManagedCursorImpl, PositionImpl> READ_POSITION_UPDATER =
             AtomicReferenceFieldUpdater.newUpdater(ManagedCursorImpl.class, PositionImpl.class, "readPosition");
+
+    //记录消息消费的位置
     protected volatile PositionImpl readPosition;
     // keeps sample of last read-position for validation and monitoring if read-position is not moving forward.
     protected volatile PositionImpl statsLastReadPosition;
@@ -2661,6 +2665,8 @@ public class ManagedCursorImpl implements ManagedCursor {
 
     private void persistPositionMetaStore(long cursorsLedgerId, PositionImpl position, Map<String, Long> properties,
             MetaStoreCallback<Void> callback, boolean persistIndividualDeletedMessageRanges) {
+        //将游标信息进行持久化
+
         if (state == State.Closed) {
             ledger.getExecutor().execute(() -> callback.operationFailed(new MetaStoreException(
                     new CursorAlreadyClosedException(name + " cursor already closed"))));
@@ -3111,6 +3117,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                     if (log.isDebugEnabled()) {
                         log.debug("[{}] Need to create new metadata ledger for cursor {}", ledger.getName(), name);
                     }
+                    //创建Ledger存储游标
                     startCreatingNewMetadataLedger();
                 }
 
