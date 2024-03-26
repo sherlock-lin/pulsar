@@ -97,11 +97,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class PersistentSubscription extends AbstractSubscription implements Subscription {
+    //持有Topic的引用
     protected final PersistentTopic topic;
+    //管理消费的游标(如果Broker重启了这个数据会不会丢？)
     protected final ManagedCursor cursor;
+    //调度，负责什么的调度呢？
     protected volatile Dispatcher dispatcher;
     protected final String topicName;
     protected final String subName;
+    //Topic名加订阅名
     protected final String fullName;
 
     private static final int FALSE = 0;
@@ -109,6 +113,7 @@ public class PersistentSubscription extends AbstractSubscription implements Subs
     private static final AtomicIntegerFieldUpdater<PersistentSubscription> IS_FENCED_UPDATER =
             AtomicIntegerFieldUpdater.newUpdater(PersistentSubscription.class, "isFenced");
     private volatile int isFenced = FALSE;
+    //消息过期监控器，应该是根据TTL来判断消息过期并触发清理动作
     private PersistentMessageExpiryMonitor expiryMonitor;
 
     private volatile long lastExpireTimestamp = 0L;
