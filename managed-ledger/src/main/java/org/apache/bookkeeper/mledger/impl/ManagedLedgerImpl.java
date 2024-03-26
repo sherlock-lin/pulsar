@@ -1884,6 +1884,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             return;
         }
 
+        // 读的位置对应的ledger和当前ledger一致
         long ledgerId = opReadEntry.readPosition.getLedgerId();
 
         LedgerHandle currentLedger = this.currentLedger;
@@ -1892,8 +1893,12 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             // Current writing ledger is not in the cache (since we don't want
             // it to be automatically evicted), and we cannot use 2 different
             // ledger handles (read & write)for the same ledger.
+            // 使用当前ledger读
             internalReadFromLedger(currentLedger, opReadEntry);
         } else {
+            // 说明：写的快，读的慢，ledger切换后，当前读的位置还是以前ledger
+            // ledgers是zk加载topic对应所有ledger的元信息缓存在内存
+            // 获取到当前的ledger信息
             LedgerInfo ledgerInfo = ledgers.get(ledgerId);
             if (ledgerInfo == null || ledgerInfo.getEntries() == 0) {
                 // Cursor is pointing to an empty ledger, there's no need to try opening it. Skip this ledger and
@@ -1904,6 +1909,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             }
 
             // Get a ledger handle to read from
+            // 创建一个可以用于读数据操作的LedgerHandle实例
             getLedgerHandle(ledgerId).thenAccept(ledger -> internalReadFromLedger(ledger, opReadEntry)).exceptionally(ex
                     -> {
                 log.error("[{}] Error opening ledger for reading at position {} - {}", name, opReadEntry.readPosition,
@@ -2050,23 +2056,26 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     }
 
     private void internalReadFromLedger(ReadHandle ledger, OpReadEntry opReadEntry) {
-
+        // 上面分析这条链路maxPosition默认long最大值，其他链路调用可以自定义设置
         if (opReadEntry.readPosition.compareTo(opReadEntry.maxPosition) > 0) {
             opReadEntry.checkReadCompletion();
             return;
         }
         // Perform the read
+        // 最后一次读的entryId
         long firstEntry = opReadEntry.readPosition.getEntryId();
         long lastEntryInLedger;
 
         PositionImpl lastPosition = lastConfirmedEntry;
 
+        // 如果没有ledger切换，上一次新增的消息就是最后entry
         if (ledger.getId() == lastPosition.getLedgerId()) {
             // For the current ledger, we only give read visibility to the last entry we have received a confirmation in
             // the managed ledger layer
             lastEntryInLedger = lastPosition.getEntryId();
         } else {
             // For other ledgers, already closed the BK lastAddConfirmed is appropriate
+            // 获取以前ledger的最后一个entry
             lastEntryInLedger = ledger.getLastAddConfirmed();
         }
 
@@ -2075,6 +2084,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             lastEntryInLedger = min(opReadEntry.maxPosition.getEntryId(), lastEntryInLedger);
         }
 
+        // 如果起始id比最后一个还大，说明没办法读。
         if (firstEntry > lastEntryInLedger) {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] No more messages to read from ledger={} lastEntry={} readEntry={}", name,
@@ -2098,6 +2108,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             return;
         }
 
+        // 开始id+读的数量=结束id 因为entryId是自增的
         long lastEntry = min(firstEntry + opReadEntry.getNumberOfEntriesToRead() - 1, lastEntryInLedger);
 
         // Filer out and skip unnecessary read entry
@@ -2135,6 +2146,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             log.debug("[{}] Reading entries from ledger {} - first={} last={}", name, ledger.getId(), firstEntry,
                     lastEntry);
         }
+        // 读取
         asyncReadEntry(ledger, firstEntry, lastEntry, opReadEntry, opReadEntry.ctx);
     }
 
@@ -2158,9 +2170,11 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             // set readOpCount to uniquely validate if ReadEntryCallbackWrapper is already recycled
             long readOpCount = READ_OP_COUNT_UPDATER.incrementAndGet(this);
             long createdTime = System.nanoTime();
+            // 第三层回调
             ReadEntryCallbackWrapper readCallback = ReadEntryCallbackWrapper.create(name, ledger.getId(), firstEntry,
                     opReadEntry, readOpCount, createdTime, ctx);
             lastReadCallback = readCallback;
+            // 缓存读
             entryCache.asyncReadEntry(ledger, firstEntry, lastEntry, opReadEntry.cursor.isCacheReadEntry(),
                     readCallback, readOpCount);
         } else {

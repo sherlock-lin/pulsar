@@ -286,6 +286,7 @@ public class PulsarClientImpl implements PulsarClient {
 
     @Override
     public ConsumerBuilder<byte[]> newConsumer() {
+        //Pulsar的客户端创建都是采用的建造者设计模式，将对象的初始化和行为分离开来
         return new ConsumerBuilderImpl<>(this, Schema.BYTES);
     }
 
@@ -477,6 +478,7 @@ public class PulsarClientImpl implements PulsarClient {
                     new PulsarClientException.InvalidConfigurationException("Consumer configuration undefined"));
         }
 
+        //会去缓存中查找订阅的Topic，只有有没有命中的则抛出异常
         for (String topic : conf.getTopicNames()) {
             if (!TopicName.isValid(topic)) {
                 return FutureUtil.failedFuture(
@@ -484,11 +486,13 @@ public class PulsarClientImpl implements PulsarClient {
             }
         }
 
+        //校验订阅名称，不可为空
         if (isBlank(conf.getSubscriptionName())) {
             return FutureUtil
                     .failedFuture(new PulsarClientException.InvalidConfigurationException("Empty subscription name"));
         }
 
+        //依然是参数校验
         if (conf.isReadCompacted() && (!conf.getTopicNames().stream()
                 .allMatch(topic -> TopicName.get(topic).getDomain() == TopicDomain.persistent)
                 || (conf.getSubscriptionType() != SubscriptionType.Exclusive
@@ -510,6 +514,7 @@ public class PulsarClientImpl implements PulsarClient {
             }
             return patternTopicSubscribeAsync(conf, schema, interceptors);
         } else if (conf.getTopicNames().size() == 1) {
+            //一般情况下如果只监听单个Topic的话，走这里的逻辑
             return singleTopicSubscribeAsync(conf, schema, interceptors);
         } else {
             return multiTopicSubscribeAsync(conf, schema, interceptors);
@@ -537,6 +542,7 @@ public class PulsarClientImpl implements PulsarClient {
 
             ConsumerBase<T> consumer;
             if (metadata.partitions > 0) {
+                //多分区情况下，走这里
                 consumer = MultiTopicsConsumerImpl.createPartitionedConsumer(PulsarClientImpl.this, conf,
                         externalExecutorProvider, consumerSubscribedFuture, metadata.partitions, schema, interceptors);
             } else {
@@ -1076,6 +1082,8 @@ public class PulsarClientImpl implements PulsarClient {
 
     public CompletableFuture<PartitionedTopicMetadata> getPartitionedTopicMetadata(String topic) {
 
+        //查询Topic的分区信息
+
         CompletableFuture<PartitionedTopicMetadata> metadataFuture = new CompletableFuture<>();
 
         try {
@@ -1100,6 +1108,7 @@ public class PulsarClientImpl implements PulsarClient {
                                              CompletableFuture<PartitionedTopicMetadata> future,
                                              List<Throwable> previousExceptions) {
         long startTime = System.nanoTime();
+        //通过Lookup服务查询分区信息
         lookup.getPartitionedTopicMetadata(topicName).thenAccept(future::complete).exceptionally(e -> {
             remainingTime.addAndGet(-1 * TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime));
             long nextDelay = Math.min(backoff.next(), remainingTime.get());

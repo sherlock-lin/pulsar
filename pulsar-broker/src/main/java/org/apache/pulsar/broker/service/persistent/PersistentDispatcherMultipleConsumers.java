@@ -256,6 +256,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
                             + "after adding {} permits", name, consumer,
                     totalAvailablePermits, additionalNumberOfMessages);
         }
+        //核心方法
         readMoreEntries();
     }
 
@@ -282,11 +283,15 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
         }
 
         // totalAvailablePermits may be updated by other threads
+        // 获取一个consumer的availablePermits
         int firstAvailableConsumerPermits = getFirstAvailableConsumerPermits();
         int currentTotalAvailablePermits = Math.max(totalAvailablePermits, firstAvailableConsumerPermits);
         if (currentTotalAvailablePermits > 0 && firstAvailableConsumerPermits > 0) {
+            // 通过限流配置计算出 1:读的数量 2:读的字节大小
             Pair<Integer, Long> calculateResult = calculateToRead(currentTotalAvailablePermits);
+            // 读的数量
             int messagesToRead = calculateResult.getLeft();
+            // 读的大小
             long bytesToRead = calculateResult.getRight();
 
             if (messagesToRead == -1 || bytesToRead == -1) {
@@ -294,6 +299,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
                 return;
             }
 
+            // 获取重新投递的列表或者可发送的延迟列表数据
             NavigableSet<PositionImpl> messagesToReplayNow = getMessagesToReplayNow(messagesToRead);
 
             if (!messagesToReplayNow.isEmpty()) {
@@ -346,6 +352,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
                     cursor.asyncReadEntriesWithSkipOrWait(messagesToRead, bytesToRead, this, ReadType.Normal,
                             topic.getMaxReadPosition(), skipCondition);
                 } else {
+                    //核心入口
                     cursor.asyncReadEntriesOrWait(messagesToRead, bytesToRead, this, ReadType.Normal,
                             topic.getMaxReadPosition());
                 }

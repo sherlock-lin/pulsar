@@ -237,6 +237,7 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
                 break;
 
             case SUBSCRIBE:
+                //处理订阅请求，盲猜会在服务端维护一个消费者对象
                 checkArgument(cmd.hasSubscribe());
                 try {
                     interceptCommand(cmd);

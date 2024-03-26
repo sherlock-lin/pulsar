@@ -104,8 +104,11 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
         }
     }
 
+
     @Override
     public CompletableFuture<Consumer<T>> subscribeAsync() {
+        //本方法主要做配置的校验，订阅相关的交给PulsarClientImpl.subscribeAsync
+
         if (conf.getTopicNames().isEmpty() && conf.getTopicsPattern() == null) {
             return FutureUtil
                     .failedFuture(new InvalidConfigurationException("Topic name must be set on the consumer builder"));
@@ -172,6 +175,7 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
         }
         return applyDLQConfig.thenCompose(__ -> {
             if (interceptorList == null || interceptorList.size() == 0) {
+                //核心方法
                 return client.subscribeAsync(conf, schema, null);
             } else {
                 return client.subscribeAsync(conf, schema, new ConsumerInterceptors<>(interceptorList));

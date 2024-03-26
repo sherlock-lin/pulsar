@@ -759,6 +759,7 @@ public class Consumer {
         this.lastConsumedFlowTimestamp = System.currentTimeMillis();
 
         // block shared consumer when unacked-messages reaches limit
+        // 超过限制不拉取
         if (shouldBlockConsumerOnUnackMsgs() && unackedMessages >= getMaxUnackedMessages()) {
             blockedConsumerOnUnackedMsgs = true;
         }
@@ -769,6 +770,7 @@ public class Consumer {
                 log.debug("[{}-{}] Added {} message permits in broker.service.Consumer before updating dispatcher "
                         + "for consumer {}", topicName, subscription, additionalNumberOfMessages, consumerId);
             }
+            // 通过订阅
             subscription.consumerFlow(this, additionalNumberOfMessages);
         } else {
             oldPermits = PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER.getAndAdd(this, additionalNumberOfMessages);

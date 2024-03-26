@@ -317,8 +317,10 @@ public class RangeEntryCacheImpl implements EntryCache {
             log.debug("[{}] Reading entries range ledger {}: {} to {}", ml.getName(), ledgerId, firstEntry, lastEntry);
         }
 
+        // 缓存实现是ConcurrentSkipListMap value是堆外内存
         Collection<EntryImpl> cachedEntries = entries.getRange(firstPosition, lastPosition);
 
+        // 数量一致
         if (cachedEntries.size() == entriesToRead) {
             long totalCachedSize = 0;
             final List<EntryImpl> entriesToReturn = Lists.newArrayListWithExpectedSize(entriesToRead);
@@ -329,21 +331,23 @@ public class RangeEntryCacheImpl implements EntryCache {
                 totalCachedSize += entry.getLength();
                 entry.release();
             }
-
+            // 监控记录命中缓存
             manager.mlFactoryMBean.recordCacheHits(entriesToReturn.size(), totalCachedSize);
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Ledger {} -- Found in cache entries: {}-{}", ml.getName(), ledgerId, firstEntry,
                         lastEntry);
             }
-
+            // 放入回调，一层一层向上。等会我们挑一个重要的回调解析
             callback.readEntriesComplete((List) entriesToReturn, ctx);
 
         } else {
+            // 说明没全部命中
             if (!cachedEntries.isEmpty()) {
                 cachedEntries.forEach(entry -> entry.release());
             }
 
             // Read all the entries from bookkeeper
+            // 从bk读
             pendingReadsManager.readEntries(lh, firstEntry, lastEntry,
                     shouldCacheEntry, callback, ctx);
 

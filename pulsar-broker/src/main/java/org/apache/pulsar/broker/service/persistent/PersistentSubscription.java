@@ -228,6 +228,7 @@ public class PersistentSubscription extends AbstractSubscription implements Subs
 
                 if (dispatcher == null || !dispatcher.isConsumerConnected()) {
                     Dispatcher previousDispatcher = null;
+                    //针对不同的订阅类型创建对应的dispatcher对象
                     switch (consumer.subType()) {
                         case Exclusive:
                             if (dispatcher == null || dispatcher.getType() != SubType.Exclusive) {
@@ -957,6 +958,8 @@ public class PersistentSubscription extends AbstractSubscription implements Subs
     @Override
     public synchronized CompletableFuture<Void> close(boolean disconnectConsumers,
                                                       Optional<BrokerLookupData> assignedBrokerLookupData) {
+       //关闭当前订阅对象
+
         if (fenceFuture != null) {
             return fenceFuture;
         }

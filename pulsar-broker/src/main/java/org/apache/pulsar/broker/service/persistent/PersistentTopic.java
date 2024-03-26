@@ -193,12 +193,16 @@ import org.slf4j.LoggerFactory;
 public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCallback {
 
     // Managed ledger associated with the topic
+    // 管理Topic隔离的Ledger
     protected final ManagedLedger ledger;
 
     // Subscriptions to this topic
+    // 存储订阅当前Topic的PersistentSubscription对象
     private final ConcurrentOpenHashMap<String, PersistentSubscription> subscriptions;
 
+    //管理对端集群，负责做跨集群复制
     private final ConcurrentOpenHashMap<String/*RemoteCluster*/, Replicator> replicators;
+    //猜不出来这是做什么的
     private final ConcurrentOpenHashMap<String/*ShadowTopic*/, Replicator> shadowReplicators;
     @Getter
     private volatile List<String> shadowTopics;
@@ -221,9 +225,13 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     // topic has every published chunked message since topic is loaded
     public boolean msgChunkPublished;
 
+    //调度限流器
     private Optional<DispatchRateLimiter> dispatchRateLimiter = Optional.empty();
+    //调度限流锁
     private final Object dispatchRateLimiterLock = new Object();
+    //订阅限流器
     private Optional<SubscribeRateLimiter> subscribeRateLimiter = Optional.empty();
+    //积压游标阈值条数
     private final long backloggedCursorThresholdEntries;
     public static final int MESSAGE_RATE_BACKOFF_MS = 1000;
 
@@ -232,16 +240,20 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     private static final Long COMPACTION_NEVER_RUN = -0xfebecffeL;
     private volatile CompletableFuture<Long> currentCompaction = CompletableFuture.completedFuture(
             COMPACTION_NEVER_RUN);
+    //处理消息压缩服务
     private TopicCompactionService topicCompactionService;
 
     // TODO: Create compaction strategy from topic policy when exposing strategic compaction to users.
+    // 在对外开放压缩策略配置时，根据用户配置创建对应的压缩策略
     private static Map<String, TopicCompactionStrategy> strategicCompactionMap = Map.of(
             ServiceUnitStateChannelImpl.TOPIC,
             new ServiceUnitStateCompactionStrategy());
 
+    //当前卸载？
     private CompletableFuture<MessageIdImpl> currentOffload = CompletableFuture.completedFuture(
             (MessageIdImpl) MessageId.earliest);
 
+    //副本订阅控制器，这是做什么的
     private volatile Optional<ReplicatedSubscriptionsController> replicatedSubscriptionsController = Optional.empty();
 
     private static final FastThreadLocal<TopicStatsHelper> threadLocalTopicStats =
@@ -268,6 +280,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     @Getter
     private final ExecutorService orderedExecutor;
 
+    //记录当前Topic的度量状态类
     private static class TopicStatsHelper {
         public double averageMsgSize;
         public double aggMsgRateIn;
@@ -293,6 +306,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
         }
     }
 
+    //核心构造函数
     public PersistentTopic(String topic, ManagedLedger ledger, BrokerService brokerService) {
         super(topic, brokerService);
         // null check for backwards compatibility with tests which mock the broker service
@@ -338,7 +352,9 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
 
     @Override
     public CompletableFuture<Void> initialize() {
+        //初始化，一般比较重要
         List<CompletableFuture<Void>> futures = new ArrayList<>();
+        //获取Broker压缩对象
         futures.add(brokerService.getPulsar().newTopicCompactionService(topic).thenAccept(service -> {
             PersistentTopic.this.topicCompactionService = service;
             this.createPersistentSubscriptions();
@@ -439,6 +455,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
         return pendingWriteOps;
     }
 
+    //创建持久化订阅
     private void createPersistentSubscriptions() {
         for (ManagedCursor cursor : ledger.getCursors()) {
                 if (cursor.getName().equals(DEDUPLICATION_CURSOR_NAME)
@@ -465,6 +482,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
      * @throws SubscriptionConflictUnloadException Conflict topic-close, topic-delete, another-subscribe-unload,
      *     cannot unload subscription now
      */
+    //卸载订阅者，主要卸载其对应的dispatcher对象
     public CompletableFuture<Void> unloadSubscription(@Nonnull String subName) {
         final PersistentSubscription sub = subscriptions.get(subName);
         if (sub == null) {
@@ -492,6 +510,8 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
                     return CompletableFuture.failedFuture(new SubscriptionConflictUnloadException(String.format(
                             "Another unload subscriber[%s] has been finished, do not repeat call.", subName)));
                 }
+
+                //为什么这里要重新创建？？？
                 sub.getCursor().rewind();
                 PersistentSubscription subNew = PersistentTopic.this.createPersistentSubscription(sub.getName(),
                         sub.getCursor(), sub.isReplicated(), sub.getSubscriptionProperties());
@@ -930,6 +950,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
                     startMessageRollbackDurationSec, readCompacted, subscriptionProperties);
 
             CompletableFuture<Consumer> future = subscriptionFuture.thenCompose(subscription -> {
+                //嘿嘿，猜得没错，果然在服务端创建对应的对象
                 Consumer consumer = new Consumer(subscription, subType, topic, consumerId, priorityLevel,
                         consumerName, isDurable, cnx, cnx.getAuthRole(), metadata,
                         readCompacted, keySharedMeta, startMessageId, consumerEpoch, schemaType);

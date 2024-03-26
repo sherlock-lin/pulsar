@@ -783,14 +783,16 @@ public class ManagedCursorImpl implements ManagedCursor {
                     .CursorAlreadyClosedException("Cursor was already closed"), ctx);
             return;
         }
-
+        // 上面调用过了，所以这里是直接return就是numberOfEntriesToRead
         int numOfEntriesToRead = applyMaxSizeCap(numberOfEntriesToRead, maxSizeBytes);
 
         PENDING_READ_OPS_UPDATER.incrementAndGet(this);
         // Skip deleted entries.
         skipCondition = skipCondition == null ? this::isMessageDeleted : skipCondition.or(this::isMessageDeleted);
+        // 读取 第二层回调
         OpReadEntry op =
                 OpReadEntry.create(this, readPosition, numOfEntriesToRead, callback, ctx, maxPosition, skipCondition);
+        //核心方法，从这里进去
         ledger.asyncReadEntries(op);
     }
 
@@ -937,13 +939,15 @@ public class ManagedCursorImpl implements ManagedCursor {
             return;
         }
 
+        // 通过ledger读取的平均流量计算最小读多少
         int numberOfEntriesToRead = applyMaxSizeCap(maxEntries, maxSizeBytes);
-
+        // 当前读的位置比上次插入的位置小，说明可以读
         if (hasMoreEntries()) {
             // If we have available entries, we can read them immediately
             if (log.isDebugEnabled()) {
                 log.debug("[{}] [{}] Read entries immediately", ledger.getName(), name);
             }
+            // 读取数据
             asyncReadEntriesWithSkip(numberOfEntriesToRead, NO_MAX_SIZE_LIMIT, callback, ctx,
                     maxPosition, skipCondition);
         } else {
