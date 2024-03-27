@@ -1580,6 +1580,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                     return;
                                 }
 
+                                //创建服务端的生产者对象
                                 buildProducerAndAddTopic(topic, producerId, producerName, requestId, isEncrypted,
                                     metadata, schemaVersion, epoch, userProvidedProducerName, topicName,
                                     producerAccessMode, topicEpoch, supportsPartialProducer, producerFuture);

@@ -190,6 +190,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
+//存在重复继承的问题
 public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCallback {
 
     // Managed ledger associated with the topic
@@ -352,14 +353,16 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
 
     @Override
     public CompletableFuture<Void> initialize() {
-        //初始化，一般比较重要
+        //初始化方法，一般比较重要
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         //获取Broker压缩对象
-        futures.add(brokerService.getPulsar().newTopicCompactionService(topic).thenAccept(service -> {
+        futures.add(brokerService.getPulsar().newTopicCompactionService(topic)
+                .thenAccept(service -> {
             PersistentTopic.this.topicCompactionService = service;
             this.createPersistentSubscriptions();
         }));
 
+        //遍历这个Topic的游标，如果游标中存在跨集群复制游标则创建对应的GeoPersistentReplicator对象进行消息的复制
         for (ManagedCursor cursor : ledger.getCursors()) {
             if (cursor.getName().startsWith(replicatorPrefix)) {
                 String localCluster = brokerService.pulsar().getConfiguration().getClusterName();
@@ -374,6 +377,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
                     if (!optPolicies.isPresent()) {
                         isEncryptionRequired = false;
                         updatePublishDispatcher();
+                        //进行资源组级别的隔离
                         updateResourceGroupLimiter(new Policies());
                         initializeDispatchRateLimiterIfNeeded();
                         updateSubscribeRateLimiter();
@@ -455,7 +459,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
         return pendingWriteOps;
     }
 
-    //创建持久化订阅
+    //根据游标创建持久化订阅，用于Topic迁移场景Broker恢复订阅情况
     private void createPersistentSubscriptions() {
         for (ManagedCursor cursor : ledger.getCursors()) {
                 if (cursor.getName().equals(DEDUPLICATION_CURSOR_NAME)
