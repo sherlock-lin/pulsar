@@ -59,6 +59,7 @@ public class PulsarResources {
     }
     public PulsarResources(MetadataStore localMetadataStore, MetadataStore configurationMetadataStore,
             int operationTimeoutSec) {
+        //如果配置元数据存储不为空，则进行初始化
         if (configurationMetadataStore != null) {
             tenantResources = new TenantResources(configurationMetadataStore, operationTimeoutSec);
             clusterResources = new ClusterResources(localMetadataStore, configurationMetadataStore,
@@ -72,6 +73,7 @@ public class PulsarResources {
             resourcegroupResources = null;
         }
 
+        //如果配置的本地元数据存储不为空，也进行初始化
         if (localMetadataStore != null) {
             dynamicConfigResources = new DynamicConfigurationResources(localMetadataStore, operationTimeoutSec);
             localPolicies = new LocalPoliciesResources(localMetadataStore, operationTimeoutSec);

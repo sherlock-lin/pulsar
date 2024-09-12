@@ -23,6 +23,7 @@ import org.apache.pulsar.common.classification.InterfaceStability;
 
 /**
  * Batch message container for individual messages being published until they are batched and sent to broker.
+ * 存放批发送场景，未装满一个批次的消息，这个容器装满后就一批发送到Broker
  */
 @InterfaceAudience.Public
 @InterfaceStability.Stable

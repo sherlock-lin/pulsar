@@ -709,6 +709,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                 PulsarVersion.getBuildHost(),
                 PulsarVersion.getBuildTime());
 
+        //记录服务开始启动时间，这样才能计算服务启动耗时
         long startTimestamp = System.currentTimeMillis();  // start time mills
 
         mutex.lock();
@@ -751,7 +752,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                     : null;
             localMetadataStore = createLocalMetadataStore(localMetadataSynchronizer);
             localMetadataStore.registerSessionListener(this::handleMetadataSessionEvent);
-
+            //Coordination负责选主协调操作
             coordinationService = new CoordinationServiceImpl(localMetadataStore);
 
             if (config.isConfigurationStoreSeparated()) {
@@ -764,31 +765,38 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                 configurationMetadataStore = localMetadataStore;
                 shouldShutdownConfigurationMetadataStore = false;
             }
+            //负责记录存储Pulsar的配置信息
             pulsarResources = newPulsarResources();
 
             orderedExecutor = newOrderedExecutor();
 
             // Initialize the message protocol handlers
+            // 初始化消息协议处理器
             protocolHandlers = ProtocolHandlers.load(config);
             protocolHandlers.initialize(config);
 
             // Now we are ready to start services
             this.bkClientFactory = newBookKeeperClientFactory();
 
+            //连接Bookie获得 Bookkeeper客户端对象
             managedLedgerClientFactory = newManagedLedgerClientFactory();
 
             this.brokerService = newBrokerService(this);
 
             // Start load management service (even if load balancing is disabled)
+            //开启负载管理器
             this.loadManager.set(LoadManager.create(this));
 
             // needs load management service and before start broker service,
+            //开启命名空间服务器
             this.startNamespaceService();
 
+            //创建schema存储服务
             schemaStorage = createAndStartSchemaStorage();
             schemaRegistryService = SchemaRegistryService.create(
                     schemaStorage, config.getSchemaRegistryCompatibilityCheckers(), this.executor);
 
+            //这是分层存储的
             OffloadPoliciesImpl defaultOffloadPolicies =
                     OffloadPoliciesImpl.create(this.getConfiguration().getProperties());
 
@@ -802,6 +810,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
 
             setBrokerInterceptor(newBrokerInterceptor());
             // use getter to support mocking getBrokerInterceptor method in tests
+            // 如果配置了Broker拦截器，则在Broker启动时进行绑定
             BrokerInterceptor interceptor = getBrokerInterceptor();
             if (interceptor != null) {
                 brokerService.setInterceptor(interceptor);
@@ -812,8 +821,11 @@ public class PulsarService implements AutoCloseable, ShutdownService {
             // Load additional servlets
             this.brokerAdditionalServlets = AdditionalServlets.load(config);
 
+            //创建支持HTTP服务
             this.webService = new WebService(this);
+            //创建度量服务
             createMetricsServlet();
+            //绑定对应的HTTP接口
             this.addWebServerHandlers(webService, metricsServlet, this.config);
             this.webService.start();
 
@@ -831,6 +843,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
 
             // the broker id is used in the load manager to identify the broker
             // it should not be used for making connections to the broker
+            // BrokerId用于做负载均衡时唯一标识Broker
             this.brokerId =
                     String.format("%s:%s", advertisedAddress, config.getWebServicePort()
                             .or(config::getWebServicePortTls).orElseThrow());
@@ -850,6 +863,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
             }
 
             // Start the leader election service
+            // 启动选主服务
             startLeaderElectionService();
 
             // By starting the Load manager service, the broker will also become visible
@@ -858,6 +872,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
             //
             // The load manager service and its service unit state channel need to be initialized first
             // (namespace service depends on load manager)
+            //开启负载均衡服务
             this.startLoadManagementService();
 
             // Initialize namespace service, after service url assigned. Should init zk and refresh self owner info.
@@ -868,6 +883,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                 this.topicPoliciesService = new SystemTopicBasedTopicPoliciesService(this);
             }
 
+            //这个主要时启动系统Topic的策略监控
             this.topicPoliciesService.start();
 
             // Register heartbeat and bootstrap namespaces.
@@ -909,9 +925,11 @@ public class PulsarService implements AutoCloseable, ShutdownService {
             acquireSLANamespace();
 
             // start function worker service if necessary
+            // 启动Worker服务
             this.startWorkerService(brokerService.getAuthenticationService(), brokerService.getAuthorizationService());
 
             // start packages management service if necessary
+            // 如果配置了包管理，则启动包管理服务
             if (config.isEnablePackagesManagement()) {
                 this.startPackagesManagementService();
             }
@@ -924,6 +942,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                 Object object = ctor.newInstance(this);
                 this.resourceUsageTransportManager = (ResourceUsageTopicTransportManager) object;
             }
+            //启动资源组管理
             this.resourceGroupServiceManager = new ResourceGroupService(this);
             if (localMetadataSynchronizer != null) {
                 localMetadataSynchronizer.start();
@@ -974,6 +993,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
 
     @VisibleForTesting
     protected PulsarResources newPulsarResources() {
+        //获取资源配置
         PulsarResources pulsarResources = new PulsarResources(localMetadataStore, configurationMetadataStore,
                 config.getMetadataStoreOperationTimeoutSeconds());
 

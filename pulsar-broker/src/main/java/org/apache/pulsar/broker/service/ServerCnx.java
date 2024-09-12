@@ -1138,7 +1138,6 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
     @Override
     protected void handleSubscribe(final CommandSubscribe subscribe) {
         //处理客户端发起的订阅请求
-
         checkArgument(state == State.Connected);
         final long requestId = subscribe.getRequestId();
         final long consumerId = subscribe.getConsumerId();
@@ -1926,12 +1925,13 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                     flow.getMessagePermits());
         }
 
+        //从当前Broker维护的Consumer列表中获取客户端对应服务端的Consumer对象
         CompletableFuture<Consumer> consumerFuture = consumers.get(flow.getConsumerId());
 
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {
             Consumer consumer = consumerFuture.getNow(null);
             if (consumer != null) {
-                //传入客户端配置的默认1000
+                //传入客户端配置的拉取条数，最大默认不会超过1000
                 consumer.flowPermits(flow.getMessagePermits());
             } else {
                 log.info("[{}] Couldn't find consumer {}", remoteAddress, flow.getConsumerId());

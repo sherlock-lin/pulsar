@@ -194,16 +194,16 @@ import org.slf4j.LoggerFactory;
 public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCallback {
 
     // Managed ledger associated with the topic
-    // 管理Topic隔离的Ledger
+    // 管理Bookkeeper的Ledger，在做消息读取或者写入时会通过该对象
     protected final ManagedLedger ledger;
 
     // Subscriptions to this topic
-    // 存储订阅当前Topic的PersistentSubscription对象
+    // 存储订阅当前Topic的所有订阅对象，key是订阅名，value是订阅对象
     private final ConcurrentOpenHashMap<String, PersistentSubscription> subscriptions;
 
-    //管理对端集群，负责做跨集群复制
+    // 管理对端集群，负责做跨集群数据复制
     private final ConcurrentOpenHashMap<String/*RemoteCluster*/, Replicator> replicators;
-    //猜不出来这是做什么的
+    //跟replicators类似
     private final ConcurrentOpenHashMap<String/*ShadowTopic*/, Replicator> shadowReplicators;
     @Getter
     private volatile List<String> shadowTopics;
@@ -236,6 +236,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     private final long backloggedCursorThresholdEntries;
     public static final int MESSAGE_RATE_BACKOFF_MS = 1000;
 
+    //处理消息重复情况
     protected final MessageDeduplication messageDeduplication;
 
     private static final Long COMPACTION_NEVER_RUN = -0xfebecffeL;
@@ -254,7 +255,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     private CompletableFuture<MessageIdImpl> currentOffload = CompletableFuture.completedFuture(
             (MessageIdImpl) MessageId.earliest);
 
-    //副本订阅控制器，这是做什么的
+    //负责跨集群复制时订阅相关事项
     private volatile Optional<ReplicatedSubscriptionsController> replicatedSubscriptionsController = Optional.empty();
 
     private static final FastThreadLocal<TopicStatsHelper> threadLocalTopicStats =
@@ -315,6 +316,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
                 ? brokerService.getTopicOrderedExecutor().chooseThread(topic)
                 : null;
         this.ledger = ledger;
+        //初始化容器，分别是维护当前Topic的订阅情况、跨集群副本情况
         this.subscriptions = ConcurrentOpenHashMap.<String, PersistentSubscription>newBuilder()
                         .expectedItems(16)
                         .concurrencyLevel(1)
@@ -359,6 +361,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
         futures.add(brokerService.getPulsar().newTopicCompactionService(topic)
                 .thenAccept(service -> {
             PersistentTopic.this.topicCompactionService = service;
+            //遍历这个Topic的游标恢复订阅中的对象
             this.createPersistentSubscriptions();
         }));
 
@@ -386,14 +389,15 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
 
                     Policies policies = optPolicies.get();
 
+                    //更新命名空间级别的策略
                     this.updateTopicPolicyByNamespacePolicy(policies);
-
+                    //初始化调度限流
                     initializeDispatchRateLimiterIfNeeded();
-
+                    //更新订阅限流
                     updateSubscribeRateLimiter();
-
+                    //更新发布限流
                     updatePublishDispatcher();
-
+                    //更新资源组限流
                     updateResourceGroupLimiter(policies);
 
                     this.isEncryptionRequired = policies.encryption_required;
@@ -958,7 +962,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
                 Consumer consumer = new Consumer(subscription, subType, topic, consumerId, priorityLevel,
                         consumerName, isDurable, cnx, cnx.getAuthRole(), metadata,
                         readCompacted, keySharedMeta, startMessageId, consumerEpoch, schemaType);
-
+                //
                 return addConsumerToSubscription(subscription, consumer).thenCompose(v -> {
                     if (subscription instanceof PersistentSubscription persistentSubscription) {
                         checkBackloggedCursor(persistentSubscription);
@@ -1786,11 +1790,15 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
 
     @Override
     public void checkMessageExpiry() {
+        //从topic配置中获取消息的TTL配置，默认值是什么？
         int messageTtlInSeconds = topicPolicies.getMessageTTLInSeconds().get();
+        //也就是说如果配置成0就不会过期，那么如果配置小于0呢？
         if (messageTtlInSeconds != 0) {
+            //循环调用当前Topic订阅者检测过期
             subscriptions.forEach((__, sub) -> {
                 if (!isCompactionSubscription(sub.getName())) {
-                   sub.expireMessages(messageTtlInSeconds);
+                    //进行具体的检测动作
+                    sub.expireMessages(messageTtlInSeconds);
                 }
             });
         }
@@ -3845,6 +3853,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
         return FutureUtil.waitForAll(subscriptionCheckFutures);
     }
 
+    //初始化策略
     protected CompletableFuture<Void> initTopicPolicy() {
         if (brokerService.pulsar().getConfig().isSystemTopicEnabled()
                 && brokerService.pulsar().getConfig().isTopicLevelPoliciesEnabled()) {

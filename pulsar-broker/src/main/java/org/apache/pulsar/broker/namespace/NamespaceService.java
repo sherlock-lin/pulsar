@@ -120,11 +120,17 @@ import org.slf4j.LoggerFactory;
 public class NamespaceService implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(NamespaceService.class);
 
+    //服务配置
     private final ServiceConfiguration config;
+    //负载均衡管理
     private final AtomicReference<LoadManager> loadManager;
+    //Pulsar核心模块
     private final PulsarService pulsar;
+    //缓存归属相关的元信息
     private final OwnershipCache ownershipCache;
+    //通过caffeine缓存当前Broker配置
     private final MetadataCache<LocalBrokerData> localBrokerDataCache;
+    //bundle工厂类，做什么用的
     private final NamespaceBundleFactory bundleFactory;
     private final String host;
 
@@ -137,16 +143,19 @@ public class NamespaceService implements AutoCloseable {
     public static final String HEARTBEAT_NAMESPACE_FMT_V2 = "pulsar/%s";
     public static final String SLA_NAMESPACE_FMT = SLA_NAMESPACE_PROPERTY + "/%s/%s";
 
+    // 这是啥
     private final ConcurrentOpenHashMap<ClusterDataImpl, PulsarClientImpl> namespaceClients;
 
     private final List<NamespaceBundleOwnershipListener> bundleOwnershipListeners;
 
     private final List<NamespaceBundleSplitListener> bundleSplitListeners;
 
-
+    //重定向管理器
     private final RedirectManager redirectManager;
 
-
+    /**
+     *  this is use for prometheus.
+     */
     private static final Counter lookupRedirects = Counter.build("pulsar_broker_lookup_redirects", "-").register();
     private static final Counter lookupFailures = Counter.build("pulsar_broker_lookup_failures", "-").register();
     private static final Counter lookupAnswers = Counter.build("pulsar_broker_lookup_answers", "-").register();
@@ -186,9 +195,11 @@ public class NamespaceService implements AutoCloseable {
     public CompletableFuture<Optional<LookupResult>> getBrokerServiceUrlAsync(TopicName topic, LookupOptions options) {
         long startTime = System.nanoTime();
 
+        // 获取这个Topic所归属的Bundle
         CompletableFuture<Optional<LookupResult>> future = getBundleAsync(topic)
                 .thenCompose(bundle -> {
                     // Do redirection if the cluster is in rollback or deploying.
+                    //根据获得的bundle信息查询归属的Broker
                     return findRedirectLookupResultAsync(bundle).thenCompose(optResult -> {
                         if (optResult.isPresent()) {
                             LOG.info("[{}] Redirect lookup request to {} for topic {}",
@@ -199,6 +210,7 @@ public class NamespaceService implements AutoCloseable {
                             return loadManager.get().findBrokerServiceUrl(Optional.of(topic), bundle);
                         } else {
                             // TODO: Add unit tests cover it.
+                            //上面如果根据Bundle信息没查到归属Broker，则走此方法进行查询
                             return findBrokerServiceUrl(bundle, options);
                         }
                     });
@@ -454,6 +466,7 @@ public class NamespaceService implements AutoCloseable {
                         future.complete(Optional.empty());
                     } else {
                         // Now, no one owns the namespace yet. Hence, we will try to dynamically assign it
+                        //动态分配？？？
                         pulsar.getExecutor().execute(() -> searchForCandidateBroker(bundle, future, options));
                     }
                 } else if (nsData.get().isDisabled()) {
@@ -727,6 +740,7 @@ public class NamespaceService implements AutoCloseable {
      * @return the least loaded broker addresses
      * @throws Exception if an error occurs
      */
+    //获得最低负载的Broker节点
     private Optional<String> getLeastLoadedFromLoadManager(ServiceUnitId serviceUnit) throws Exception {
         Optional<ResourceUnit> leastLoadedBroker = loadManager.get().getLeastLoaded(serviceUnit);
         if (leastLoadedBroker.isEmpty()) {
@@ -814,6 +828,7 @@ public class NamespaceService implements AutoCloseable {
                        return CompletableFuture.completedFuture(statusMap);
                    }
                     Collection<CompletableFuture<OwnedBundle>> futures =
+                            //同样优先查询缓存，查不到再去查询zk
                             ownershipCache.getOwnedBundlesAsync().values();
                     return FutureUtil.waitForAll(futures)
                             .thenApply(__ -> futures.stream()
@@ -883,14 +898,16 @@ public class NamespaceService implements AutoCloseable {
     public CompletableFuture<Void> splitAndOwnBundle(NamespaceBundle bundle, boolean unload,
                                                      NamespaceBundleSplitAlgorithm splitAlgorithm,
                                                      List<Long> boundaries) {
+        //如果实现了自定义的分割逻辑则使用自定义的
         if (ExtensibleLoadManagerImpl.isLoadManagerExtensionEnabled(config)) {
             return ExtensibleLoadManagerImpl.get(loadManager.get())
                     .splitNamespaceBundleAsync(bundle, splitAlgorithm, boundaries);
         }
+
         final CompletableFuture<Void> unloadFuture = new CompletableFuture<>();
         final AtomicInteger counter = new AtomicInteger(BUNDLE_SPLIT_RETRY_LIMIT);
+        //核心流程流程
         splitAndOwnBundleOnceAndRetry(bundle, unload, counter, unloadFuture, splitAlgorithm, boundaries);
-
         return unloadFuture;
     }
 
@@ -900,8 +917,10 @@ public class NamespaceService implements AutoCloseable {
                                        CompletableFuture<Void> completionFuture,
                                        NamespaceBundleSplitAlgorithm splitAlgorithm,
                                        List<Long> boundaries) {
+        //获取bundle分割配置
         BundleSplitOption bundleSplitOption = getBundleSplitOption(bundle, boundaries, config);
 
+        //根据配置来选择对应的分割算法进行分割
         splitAlgorithm.getSplitBoundary(bundleSplitOption).whenComplete((splitBoundaries, ex) -> {
             CompletableFuture<List<NamespaceBundle>> updateFuture = new CompletableFuture<>();
             if (ex == null) {
@@ -912,6 +931,7 @@ public class NamespaceService implements AutoCloseable {
                     return;
                 }
                 try {
+                    //进行bundle分割操作
                     bundleFactory.splitBundles(bundle, splitBoundaries.size() + 1, splitBoundaries)
                             .thenAccept(splitBundles -> {
                                 // Split and updateNamespaceBundles. Update may fail because of concurrent write to
@@ -935,9 +955,11 @@ public class NamespaceService implements AutoCloseable {
                                 }
                                 try {
                                     // take ownership of newly split bundles
+                                    // 检查确保每个Bundle都有对应的Broker负责
                                     for (NamespaceBundle sBundle : splitBundles.getRight()) {
                                         Objects.requireNonNull(ownershipCache.tryAcquiringOwnership(sBundle));
                                     }
+                                    //更新Bundle信息，毕竟Bundle已经分裂好了，相关的一些元数据要同步更新
                                     updateNamespaceBundles(nsname, splitBundles.getLeft()).thenCompose(__ ->
                                         updateNamespaceBundlesForPolicies(nsname, splitBundles.getLeft()))
                                             .thenRun(() -> {
@@ -972,6 +994,7 @@ public class NamespaceService implements AutoCloseable {
             updateFuture.whenCompleteAsync((r, t)-> {
                 if (t != null) {
                     // retry several times on BadVersion
+                    // 失败则重试几次
                     if ((t.getCause() instanceof MetadataStoreException.BadVersionException)
                             && (counter.decrementAndGet() >= 0)) {
                         pulsar.getExecutor().schedule(() -> pulsar.getOrderedExecutor()
@@ -992,6 +1015,7 @@ public class NamespaceService implements AutoCloseable {
 
                 // success updateNamespaceBundles
                 // disable old bundle in memory
+                //更新bundle的状态
                 getOwnershipCache().updateBundleState(bundle, false)
                         .thenRun(() -> {
                             // update bundled_topic cache for load-report-generation

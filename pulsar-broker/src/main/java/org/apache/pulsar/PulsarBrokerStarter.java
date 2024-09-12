@@ -159,7 +159,7 @@ public class PulsarBrokerStarter {
                 System.exit(0);
             }
 
-            // init broker config
+            // 初始化broker配置
             if (isBlank(starterArguments.brokerConfigFile)) {
                 jcommander.usage();
                 throw new IllegalArgumentException("Need to specify a configuration file for broker");
@@ -187,7 +187,7 @@ public class PulsarBrokerStarter {
                         + "must contains the default namespace bundle split algorithm");
             }
 
-            // init functions worker
+            // 初始化 functions worker
             if (starterArguments.runFunctionsWorker || brokerConfig.isFunctionsWorkerEnabled()) {
                 final String filepath = Path.of(starterArguments.fnWorkerConfigFile)
                         .toAbsolutePath().normalize().toString();
@@ -198,7 +198,7 @@ public class PulsarBrokerStarter {
                 functionsWorkerService = null;
             }
 
-            // init pulsar service
+            // 初始化 pulsar service
             pulsarService = new PulsarService(brokerConfig,
                                               workerConfig,
                                               Optional.ofNullable(functionsWorkerService),
@@ -240,7 +240,7 @@ public class PulsarBrokerStarter {
                 bookieStatsProvider = null;
             }
 
-            // init bookie server
+            // 初始化 bookie 服务
             if (starterArguments.runBookie) {
                 Objects.requireNonNull(bookieConfig, "No ServerConfiguration for Bookie");
                 Objects.requireNonNull(bookieStatsProvider, "No Stats Provider for Bookie");
@@ -330,6 +330,7 @@ public class PulsarBrokerStarter {
             exception.printStackTrace(System.out);
         });
 
+        //初始化Broker
         BrokerStarter starter = new BrokerStarter(args);
         Runtime.getRuntime().addShutdownHook(
             new Thread(() -> {
@@ -353,6 +354,7 @@ public class PulsarBrokerStarter {
         });
 
         try {
+            //进行Broker启动
             starter.start();
         } catch (Throwable t) {
             log.error("Failed to start pulsar service.", t);

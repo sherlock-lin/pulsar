@@ -277,6 +277,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 .create(),
             this);
 
+        //这里进去就是创建跟Broker的网络连接
         grabCnx();
     }
 
@@ -449,6 +450,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         ByteBuf compressedPayload = payload;
         boolean compressed = false;
         // Batch will be compressed when closed
+        // 在没有开启批量发送的时候，默认会对消息进行压缩(为啥？)
         // If a message has a delayed delivery time, we'll always send it individually
         if (!isBatchMessagingEnabled() || msgMetadata.hasDeliverAtTime()) {
             compressedPayload = applyCompression(payload);
@@ -491,6 +493,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         // send in chunks
         int totalChunks;
         int payloadChunkSize;
+        //如果消息支持批传输，活着不支持分块功能，则只当作一个块进行发送
         if (canAddToBatch(msg) || !conf.isChunkingEnabled()) {
             totalChunks = 1;
             payloadChunkSize = ClientCnx.getMaxMessageSize();
@@ -511,6 +514,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 return;
             }
             payloadChunkSize = Math.min(chunkMaxMessageSize, payloadChunkSize);
+            //计算大消息应该被分成多少块进行发送
             totalChunks = MathUtils.ceilDiv(Math.max(1, compressedPayload.readableBytes()), payloadChunkSize);
         }
 
@@ -629,8 +633,10 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                                          SendCallback callback,
                                          ChunkedMessageCtx chunkedMessageCtx,
                                          MessageId messageId) throws IOException {
+        //序列化、压缩等事情
         ByteBuf chunkPayload = compressedPayload;
         MessageMetadata msgMetadata = msg.getMessageBuilder();
+        //totalChunks是指的消息被分成的块数量，这里判断就是消息被分块的情况
         if (totalChunks > 1 && TopicName.get(topic).isPersistent()) {
             chunkPayload = compressedPayload.slice(readStartIndex,
                     Math.min(chunkMaxSizeInBytes, chunkPayload.readableBytes() - readStartIndex));
@@ -647,7 +653,9 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 .setTotalChunkMsgSize(compressedPayloadSize);
         }
 
+        //消息允许批写入，并且不允许分块的情况
         if (canAddToBatch(msg) && totalChunks <= 1) {
+            //判断当前这条消息是否可以被写到
             if (canAddToCurrentBatch(msg)) {
                 // should trigger complete the batch message, new message will add to a new batch and new batch
                 // sequence id use the new message, so that broker can handle the message duplication
@@ -659,6 +667,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                         log.info("Message with sequence id {} might be a duplicate but cannot be determined at this"
                                 + " time.", sequenceId);
                     }
+                    //
                     doBatchSendAndAdd(msg, callback, payload);
                 } else {
                     // Should flush the last potential duplicated since can't combine potential duplicated messages
@@ -2195,6 +2204,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 }
                 batchMessageContainer.clear();
                 for (OpSendMsg opSendMsg : opSendMsgs) {
+                    //进行消息发送
                     processOpSendMsg(opSendMsg);
                 }
             } catch (Throwable t) {
@@ -2218,12 +2228,15 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             if (isMessageSizeExceeded(op)) {
                 return;
             }
+            //pendingMessages队列中维护这条请求的状态，用于等待ack
             pendingMessages.add(op);
             if (op.msg != null) {
+                //记录最新发送那条消息的标识
                 LAST_SEQ_ID_PUSHED_UPDATER.getAndUpdate(this,
                         last -> Math.max(last, getHighestSequenceId(op)));
             }
 
+            //获取当前这个Producer跟Broker保持的Netty连接
             final ClientCnx cnx = getCnxIfReady();
             if (cnx != null) {
                 if (op.msg != null && op.msg.getSchemaState() == None) {
@@ -2394,6 +2407,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
     }
 
     void grabCnx() {
+        //实际上是调用ConnectionHandler进行的
         this.connectionHandler.grabCnx();
     }
 

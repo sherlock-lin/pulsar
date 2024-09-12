@@ -25,6 +25,7 @@ import org.apache.pulsar.common.net.ServiceURI;
 
 /**
  * A service name resolver to resolve real socket address.
+ * 通过服务名解析出真实的网络socket地址
  */
 public interface ServiceNameResolver {
 

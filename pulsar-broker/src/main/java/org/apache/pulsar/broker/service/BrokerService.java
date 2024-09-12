@@ -291,15 +291,19 @@ public class BrokerService implements Closeable {
 
     public BrokerService(PulsarService pulsar, EventLoopGroup eventLoopGroup) throws Exception {
         this.pulsar = pulsar;
+        //初始化发布限流器
         this.brokerPublishRateLimiter = new PublishRateLimiterImpl(pulsar.getMonotonicSnapshotClock());
         this.preciseTopicPublishRateLimitingEnable =
                 pulsar.getConfiguration().isPreciseTopicPublishRateLimiterEnable();
         this.managedLedgerFactory = pulsar.getManagedLedgerFactory();
+        //初始化管理topics的容器Map
         this.topics =
                 ConcurrentOpenHashMap.<String, CompletableFuture<Optional<Topic>>>newBuilder()
                 .build();
+        //通过Map维护进行集群副本复制的客户端
         this.replicationClients =
                 ConcurrentOpenHashMap.<String, PulsarClient>newBuilder().build();
+        //连接当前Broker的管理流
         this.clusterAdmins =
                 ConcurrentOpenHashMap.<String, PulsarAdmin>newBuilder().build();
         this.keepAliveIntervalSeconds = pulsar.getConfiguration().getKeepAliveIntervalSeconds();
@@ -307,17 +311,20 @@ public class BrokerService implements Closeable {
                 ConcurrentOpenHashMap.<String, Consumer<?>>newBuilder().build();
         this.pendingTopicLoadingQueue = Queues.newConcurrentLinkedQueue();
 
+        //维护多层级的Topic信息，这是用来做什么的？
         this.multiLayerTopicsMap = ConcurrentOpenHashMap.<String,
                 ConcurrentOpenHashMap<String, ConcurrentOpenHashMap<String, Topic>>>newBuilder()
                 .build();
+        //管理Topic的归属信息
         this.owningTopics = ConcurrentOpenHashMap.<String,
                 ConcurrentOpenHashSet<Integer>>newBuilder()
                 .build();
+        //记录Pulsar各项指标的状态
         this.pulsarStats = new PulsarStats(pulsar);
         this.offlineTopicStatCache =
                 ConcurrentOpenHashMap.<TopicName,
                         PersistentOfflineTopicStats>newBuilder().build();
-
+        //干嘛用的？
         this.topicOrderedExecutor = OrderedExecutor.newBuilder()
                 .numThreads(pulsar.getConfiguration().getTopicOrderedExecutorThreadNum())
                 .name("broker-topic-workers").build();
@@ -335,36 +342,46 @@ public class BrokerService implements Closeable {
                 pulsar.getConfiguration(), pulsar().getPulsarResources());
         this.entryFilterProvider = new EntryFilterProvider(pulsar.getConfiguration());
 
+        //注册元数据变更，在有变更时进行配置同步更新
         pulsar.getLocalMetadataStore().registerListener(this::handleMetadataChanges);
         pulsar.getConfigurationMetadataStore().registerListener(this::handleMetadataChanges);
 
-
+        //不活跃的检测
         this.inactivityMonitor = OrderedScheduler.newSchedulerBuilder()
                 .name("pulsar-inactivity-monitor")
                 .numThreads(1)
                 .build();
+        //消息过期检测
         this.messageExpiryMonitor = OrderedScheduler.newSchedulerBuilder()
                 .name("pulsar-msg-expiry-monitor")
                 .numThreads(1)
                 .build();
+        //压缩检测
         this.compactionMonitor = OrderedScheduler.newSchedulerBuilder()
                 .name("pulsar-compaction-monitor")
                 .numThreads(1)
                 .build();
+        //消费者检测？
         this.consumedLedgersMonitor = OrderedScheduler.newSchedulerBuilder()
                 .name("pulsar-consumed-ledgers-monitor")
                 .numThreads(1)
                 .build();
+        //积压限额管理
         this.backlogQuotaManager = new BacklogQuotaManager(pulsar);
+        //积压限额检测
         this.backlogQuotaChecker = OrderedScheduler.newSchedulerBuilder()
                 .name("pulsar-backlog-quota-checker")
                 .numThreads(1)
                 .build();
+        //鉴权服务
         this.authenticationService = new AuthenticationService(pulsar.getConfiguration());
+        //用于给客户端分配消费信息
         this.blockedDispatchers =
                 ConcurrentOpenHashSet.<PersistentDispatcherMultipleConsumers>newBuilder().build();
+        //这是啥？
         this.topicFactory = createPersistentTopicFactory();
         // update dynamic configuration and register-listener
+        //更新配置
         updateConfigurationAndRegisterListeners();
         this.lookupRequestSemaphore = new AtomicReference<Semaphore>(
                 new Semaphore(pulsar.getConfiguration().getMaxConcurrentLookupRequest(), false));
@@ -378,6 +395,7 @@ public class BrokerService implements Closeable {
             log.info("Enabling per-broker unack-message limit {} and dispatcher-limit {} on blocked-broker",
                     maxUnackedMessages, maxUnackedMsgsPerDispatcher);
             // block misbehaving dispatcher by checking periodically
+            //定期检测未ack消息的调度
             pulsar.getExecutor().scheduleAtFixedRate(this::checkUnAckMessageDispatching,
                     600, 30, TimeUnit.SECONDS);
         } else {
@@ -389,9 +407,11 @@ public class BrokerService implements Closeable {
                     pulsar.getConfiguration().getMaxUnackedMessagesPerSubscriptionOnBrokerBlocked());
         }
 
+        //负责跟踪延迟消息的
         this.delayedDeliveryTrackerFactory = DelayedDeliveryTrackerLoader
                 .loadDelayedDeliveryTrackerFactory(pulsar);
 
+        //服务端Netty的配置
         this.defaultServerBootstrap = defaultServerBootstrap();
 
         this.pendingLookupRequests = ObserverGauge.build("pulsar_broker_lookup_pending_requests", "-")
@@ -405,6 +425,7 @@ public class BrokerService implements Closeable {
                         - topicLoadRequestSemaphore.get().availablePermits())
                 .register();
 
+        //Broker拦截器
         this.brokerEntryMetadataInterceptors = BrokerEntryMetadataUtils
                 .loadBrokerEntryMetadataInterceptors(pulsar.getConfiguration().getBrokerEntryMetadataInterceptors(),
                         BrokerService.class.getClassLoader());
@@ -412,6 +433,7 @@ public class BrokerService implements Closeable {
         this.brokerEntryPayloadProcessors = BrokerEntryMetadataUtils.loadInterceptors(pulsar.getConfiguration()
                         .getBrokerEntryPayloadProcessors(), BrokerService.class.getClassLoader());
 
+        //进行Bundle限额管理
         this.bundlesQuotas = new BundlesQuotas(pulsar);
     }
 
@@ -506,6 +528,7 @@ public class BrokerService implements Closeable {
     }
 
     public void start() throws Exception {
+        //创建分布式ID生成器用于给生产者分配名字
         this.producerNameGenerator = new DistributedIdGenerator(pulsar.getCoordinationService(),
                 PRODUCER_NAME_GENERATOR_PATH, pulsar.getConfiguration().getClusterName());
 
@@ -525,6 +548,7 @@ public class BrokerService implements Closeable {
                             .enableTLS(isTls)
                             .listenerName(a.getListenerName()).build();
 
+            //这里应该就很眼熟了，就是启动Netty服务端的流程
             ServerBootstrap b = defaultServerBootstrap.clone();
             b.childHandler(
                     pulsarChannelInitFactory.newPulsarChannelInitializer(pulsar, opts));
@@ -553,6 +577,7 @@ public class BrokerService implements Closeable {
         }
 
         // start other housekeeping functions
+        //启动一堆后台任务，用于在Broker运行时进行各自的职责的，例如定期过期检测、压缩、积压检测等
         this.startStatsUpdater(
                 serviceConfig.getStatsUpdateInitialDelayInSecs(),
                 serviceConfig.getStatsUpdateFrequencyInSecs());
@@ -2060,6 +2085,8 @@ public class BrokerService implements Closeable {
      * Iterates over all loaded topics in the broker.
      */
     public void forEachTopic(Consumer<Topic> consumer) {
+        //topics是Broker维护的一个Map结构，用于记录当前Broker所维护的Topic信息
+        //这里使用了Java8的Consumer，相当于闭包的设计，让内部的所有Topic都执行checkMessageExpiry方法
         topics.forEach((n, t) -> {
             Optional<Topic> topic = extractTopic(t);
             topic.ifPresent(consumer::accept);

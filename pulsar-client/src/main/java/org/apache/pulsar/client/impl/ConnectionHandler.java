@@ -112,6 +112,7 @@ public class ConnectionHandler {
                     // once, client receives redirection url, client has to perform lookup on migrated
                     // cluster to find the broker that owns the topic and then create connection.
                     // below method, performs the lookup for a given topic and then creates connection
+                    // 跟服务端Broker创建TCP连接
                     cnxFuture = state.client.getConnection(state.topic, (state.redirectedClusterURI.toString()));
                 }
             } else if (state.topic == null) {

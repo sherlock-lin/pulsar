@@ -51,6 +51,8 @@ import org.apache.pulsar.common.policies.data.BookiesClusterInfo;
 import org.apache.pulsar.common.policies.data.BookiesRackConfiguration;
 import org.apache.pulsar.common.policies.data.RawBookieInfo;
 
+
+//都是机架相关的配置CURD
 @Path("/bookies")
 @Api(value = "/bookies", description = "Configure bookies rack placement", tags = "bookies")
 @Produces(MediaType.APPLICATION_JSON)
@@ -65,7 +67,7 @@ public class Bookies extends AdminResource {
     @ApiResponses(value = {@ApiResponse(code = 403, message = "Don't have admin permission")})
     public void getBookiesRackInfo(@Suspended final AsyncResponse asyncResponse) {
         validateSuperUserAccess();
-
+        //获取机架信息
         getPulsarResources().getBookieResources().get()
                 .thenAccept(b -> {
                     asyncResponse.resume(b.orElseGet(() -> new BookiesRackConfiguration()));
@@ -83,13 +85,16 @@ public class Bookies extends AdminResource {
     public BookiesClusterInfo getAllBookies() throws Exception {
         validateSuperUserAccess();
 
+        //获取所有Bookie信息
         BookKeeper bookKeeper = bookKeeper();
         MetadataClientDriver metadataClientDriver = bookKeeper.getMetadataClientDriver();
         RegistrationClient registrationClient = metadataClientDriver.getRegistrationClient();
 
+        //获取所有Bookie信息，其实就是所有Bookie的ID
         Set<BookieId> allBookies = registrationClient.getAllBookies().get().getValue();
         List<RawBookieInfo> result = new ArrayList<>(allBookies.size());
         for (BookieId bookieId : allBookies) {
+            //
             RawBookieInfo bookieInfo = new RawBookieInfo(bookieId.toString());
             result.add(bookieInfo);
         }

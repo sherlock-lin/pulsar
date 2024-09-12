@@ -29,6 +29,7 @@ import org.apache.pulsar.broker.service.persistent.PersistentDispatcherMultipleC
 @Slf4j
 public abstract class AbstractDelayedDeliveryTracker implements DelayedDeliveryTracker, TimerTask {
 
+    //所以dispatcher究竟是做什么用的
     protected final PersistentDispatcherMultipleConsumers dispatcher;
 
     // Reference to the shared (per-broker) timer for delayed delivery

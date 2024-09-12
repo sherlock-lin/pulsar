@@ -29,6 +29,7 @@ import lombok.ToString;
 @AllArgsConstructor
 @ToString
 public class LookupTopicResult {
+    //LookupTopicResult是查询Topic归属Broker的结果后包装的一层结果，可以看到这里其实就是Socket信息也就是IP+端口
     private final InetSocketAddress logicalAddress;
     private final InetSocketAddress physicalAddress;
     private final boolean isUseProxy;

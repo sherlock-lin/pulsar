@@ -25,13 +25,17 @@ import com.google.common.collect.Range;
 import java.util.Objects;
 
 public class NamespaceBundle implements ServiceUnitId, Comparable<NamespaceBundle> {
+    //所归属的namespace名称
     private final NamespaceName nsname;
+    //所负责的哈希环范围
     private final Range<Long> keyRange;
     private final NamespaceBundleFactory factory;
     // Issue#596: remove this once we remove broker persistent/non-persistent mode configuration
     // it is used by load-manager while considering bundle ownership
     private boolean hasNonPersistentTopic = false;
+    //key中包含namespace名称以及所负责范围的上下边界
     private final String key;
+    //所负责范围的上下边界
     private final String bundleRange;
 
     public NamespaceBundle(NamespaceName nsname, Range<Long> keyRange, NamespaceBundleFactory factory) {

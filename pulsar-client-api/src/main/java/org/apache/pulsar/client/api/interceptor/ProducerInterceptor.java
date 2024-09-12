@@ -51,7 +51,7 @@ public interface ProducerInterceptor extends AutoCloseable {
 
     /**
      * Check whether the interceptor is eligible for this message.
-     *
+     * 检查当前拦截器是否要对这条消息生效
      * @param message message to send
      * @return whether the interceptor can be applied to this particular message.
      */

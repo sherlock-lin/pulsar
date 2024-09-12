@@ -26,6 +26,7 @@ import org.apache.pulsar.broker.service.plugin.EntryFilter;
 import org.apache.pulsar.broker.service.plugin.FilterContext;
 import org.apache.pulsar.common.api.proto.MessageMetadata;
 
+//这个类不应该作为基类
 public class EntryFilterSupport {
 
     protected final List<EntryFilter> entryFilters;
@@ -34,6 +35,7 @@ public class EntryFilterSupport {
     protected final Subscription subscription;
 
     public EntryFilterSupport(Subscription subscription) {
+        //初始化过滤器
         this.subscription = subscription;
         if (subscription != null && subscription.getTopic() != null
                 && !subscription.getTopic().isSystemTopic()) {

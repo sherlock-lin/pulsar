@@ -33,8 +33,10 @@ import org.apache.pulsar.policies.data.loadbalancer.SystemResourceUsage.Resource
  * This class represents the overall load of the broker - it includes overall {@link SystemResourceUsage} and
  * {@link NamespaceUsage} for all the namespaces hosted by this broker.
  */
+//这个类记录当前Broker节点的全部负载情况
 @JsonDeserialize(as = LoadReport.class)
 public class LoadReport implements LoadManagerReport {
+
     private String name;
     private String brokerVersionString;
 
@@ -42,6 +44,7 @@ public class LoadReport implements LoadManagerReport {
     private final String webServiceUrlTls;
     private final String pulsarServiceUrl;
     private final String pulsarServiceUrlTls;
+    //默认都开启
     private boolean persistentTopicsEnabled = true;
     private boolean nonPersistentTopicsEnabled = true;
 
@@ -88,6 +91,7 @@ public class LoadReport implements LoadManagerReport {
     /**
      * Overall machine resource used, not just by broker process.
      */
+    //系统资源使用情况
     private SystemResourceUsage systemResourceUsage;
 
     private Map<String, NamespaceBundleStats> bundleStats;

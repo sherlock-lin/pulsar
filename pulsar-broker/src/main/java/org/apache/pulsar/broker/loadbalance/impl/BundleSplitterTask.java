@@ -33,11 +33,15 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Determines which bundles should be split based on various thresholds.
+ * 基于多个阈值判断Bundle是否被分割
  */
 public class BundleSplitterTask implements BundleSplitStrategy {
     private static final Logger log = LoggerFactory.getLogger(BundleSplitStrategy.class);
+
+    //bundle的缓存，存储需要做分裂的bundle
     private final Map<String, String> bundleCache;
 
+    //namespace的bundle数量统计，key是namespace，value是对应的bundle数量
     private final Map<String, Integer> namespaceBundleCount;
 
 
@@ -62,6 +66,7 @@ public class BundleSplitterTask implements BundleSplitStrategy {
      *         message rates, or total throughput and the brokers on which they reside.
      */
     @Override
+    //找到需要被分割的bundle列表，每个Broker仅查询自己所负责的bundle集合。这里仅做查询，分裂在后面
     public Map<String, String> findBundlesToSplit(final LoadData loadData, final PulsarService pulsar) {
         bundleCache.clear();
         namespaceBundleCount.clear();
@@ -77,6 +82,7 @@ public class BundleSplitterTask implements BundleSplitStrategy {
             for (final Map.Entry<String, NamespaceBundleStats> entry : localData.getLastStats().entrySet()) {
                 final String bundle = entry.getKey();
                 final NamespaceBundleStats stats = entry.getValue();
+                // 如果这个Namespace只有一个topic，可以直接跳过bundle分裂的动作
                 if (stats.topics < 2) {
                     if (log.isDebugEnabled()) {
                         log.debug("The count of topics on the bundle {} is less than 2, skip split!", bundle);
@@ -86,18 +92,23 @@ public class BundleSplitterTask implements BundleSplitStrategy {
                 double totalMessageRate = 0;
                 double totalMessageThroughput = 0;
                 // Attempt to consider long-term message data, otherwise effectively ignore.
+                //这里的判断是要做什么
                 if (loadData.getBundleData().containsKey(bundle)) {
                     final TimeAverageMessageData longTermData = loadData.getBundleData().get(bundle).getLongTermData();
                     totalMessageRate = longTermData.totalMsgRate();
                     totalMessageThroughput = longTermData.totalMsgThroughput();
                 }
+
+                // 判断是否满足进行Bundle分裂的条件
                 if (stats.topics > maxBundleTopics || (maxBundleSessions > 0 && (stats.consumerCount
                         + stats.producerCount > maxBundleSessions))
                         || totalMessageRate > maxBundleMsgRate || totalMessageThroughput > maxBundleBandwidth) {
                     final String namespace = LoadManagerShared.getNamespaceNameFromBundleName(bundle);
                     try {
+                        //获取该Namespace下的bundle数量
                         final int bundleCount = pulsar.getNamespaceService()
                                 .getBundleCount(NamespaceName.get(namespace));
+
                         if ((bundleCount + namespaceBundleCount.getOrDefault(namespace, 0))
                                 < maxBundleCount) {
                             log.info("The bundle {} is considered to be unload. Topics: {}/{}, Sessions: ({}+{})/{}, "

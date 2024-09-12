@@ -58,6 +58,7 @@ class BatchMessageContainerImpl extends AbstractBatchMessageContainer {
     @Setter
     protected long highestSequenceId = -1L;
     protected ByteBuf batchedMessageMetadataAndPayload;
+    //这个容器的核心数据结构，存放这个批次要发送的消息
     protected List<MessageImpl<?>> messages = new ArrayList<>(maxMessagesNum);
     protected SendCallback previousCallback = null;
     // keep track of callbacks for individual messages being published in a batch
@@ -252,6 +253,7 @@ class BatchMessageContainerImpl extends AbstractBatchMessageContainer {
         if (messages.size() == 1) {
             messageMetadata.clear();
             messageMetadata.copyFrom(messages.get(0).getMessageBuilder());
+            //进行数据加密，如果没有开启加密则返回的就是原来的消息
             ByteBuf encryptedPayload = producer.encryptMessage(messageMetadata, getCompressedBatchMetadataAndPayload());
             updateAndReserveBatchAllocatedSize(encryptedPayload.capacity());
             ByteBufPair cmd = producer.sendMessage(producer.producerId, messageMetadata.getSequenceId(),
@@ -263,6 +265,7 @@ class BatchMessageContainerImpl extends AbstractBatchMessageContainer {
             // Because when invoke `ProducerImpl.processOpSendMsg` on flush,
             // if `op.msg != null && isBatchMessagingEnabled()` checks true, it will call `batchMessageAndSend` to flush
             // messageContainers before publishing this one-batch message.
+            //创建对应的操作对象
             op = OpSendMsg.create(messages, cmd, messageMetadata.getSequenceId(), firstCallback,
                     batchAllocatedSizeBytes);
 

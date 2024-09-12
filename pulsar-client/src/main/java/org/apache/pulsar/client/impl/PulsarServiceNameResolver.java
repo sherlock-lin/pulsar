@@ -31,6 +31,7 @@ import org.apache.pulsar.common.net.ServiceURI;
 
 /**
  * The default implementation of {@link ServiceNameResolver}.
+ * 通过服务名解析出真实的网络socket地址
  */
 @Slf4j
 public class PulsarServiceNameResolver implements ServiceNameResolver {

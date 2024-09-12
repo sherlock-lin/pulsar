@@ -105,8 +105,11 @@ public class BrokersBase extends AdminResource {
             @ApiResponse(code = 404, message = "Cluster does not exist: cluster={clustername}") })
     public void getActiveBrokers(@Suspended final AsyncResponse asyncResponse,
                                  @PathParam("cluster") String cluster) {
+        //身份校验
         validateSuperUserAccessAsync()
                 .thenCompose(__ -> validateClusterOwnershipAsync(cluster))
+                //获取当前存活的BrokerId列表
+                //先尝试从Caffeine缓存中读取信息，如果缓存过期则从Zookeeper中读取
                 .thenCompose(__ -> pulsar().getLoadManager().get().getAvailableBrokersAsync())
                 .thenAccept(activeBrokers -> {
                     LOG.info("[{}] Successfully to get active brokers, cluster={}", clientAppId(), cluster);
@@ -132,6 +135,7 @@ public class BrokersBase extends AdminResource {
                     @ApiResponse(code = 401, message = "Authentication required"),
                     @ApiResponse(code = 403, message = "This operation requires super-user access") })
     public void getActiveBrokers(@Suspended final AsyncResponse asyncResponse) throws Exception {
+        //获取所有集群存活的Broker节点
         getActiveBrokers(asyncResponse, null);
     }
 
@@ -146,13 +150,16 @@ public class BrokersBase extends AdminResource {
                     @ApiResponse(code = 403, message = "This operation requires super-user access"),
                     @ApiResponse(code = 404, message = "Leader broker not found") })
     public void getLeaderBroker(@Suspended final AsyncResponse asyncResponse) {
+        //获取当前Broker集群的Leader节点信息
         validateSuperUserAccessAsync().thenAccept(__ -> {
+                    //获取Leader节点
                     LeaderBroker leaderBroker = pulsar().getLeaderElectionService().getCurrentLeader()
                             .orElseThrow(() -> new RestException(Status.NOT_FOUND, "Couldn't find leader broker"));
                     BrokerInfo brokerInfo = BrokerInfo.builder()
                             .serviceUrl(leaderBroker.getServiceUrl())
                             .brokerId(leaderBroker.getBrokerId()).build();
                     LOG.info("[{}] Successfully to get the information of the leader broker.", clientAppId());
+                    //异步回调的消息
                     asyncResponse.resume(brokerInfo);
                 })
                 .exceptionally(ex -> {
@@ -173,9 +180,12 @@ public class BrokersBase extends AdminResource {
     public void getOwnedNamespaces(@Suspended final AsyncResponse asyncResponse,
                                    @PathParam("clusterName") String cluster,
                                    @PathParam("brokerId") String brokerId) {
+        //查询当前Broker节点所管理的Bundle列表
+        //这些元信息都是存在zk，并通过Caffeine做缓存避免频繁访问zk
         validateSuperUserAccessAsync()
                 .thenCompose(__ -> maybeRedirectToBroker(brokerId))
                 .thenCompose(__ -> validateClusterOwnershipAsync(cluster))
+                //核心方法
                 .thenCompose(__ -> pulsar().getNamespaceService().getOwnedNameSpacesStatusAsync())
                 .thenAccept(asyncResponse::resume)
                 .exceptionally(ex -> {
@@ -202,6 +212,7 @@ public class BrokersBase extends AdminResource {
     public void updateDynamicConfiguration(@Suspended AsyncResponse asyncResponse,
                                            @PathParam("configName") String configName,
                                            @PathParam("configValue") String configValue) {
+        //更新动态配置
         validateSuperUserAccessAsync()
                 .thenCompose(__ -> persistDynamicConfigurationAsync(configName, configValue))
                 .thenAccept(__ -> {
@@ -334,6 +345,7 @@ public class BrokersBase extends AdminResource {
             @ApiResponse(code = 403, message = "Don't have admin permission"),
             @ApiResponse(code = 500, message = "Internal server error")})
     public void backlogQuotaCheck(@Suspended AsyncResponse asyncResponse) {
+        //触发消息积压限额检查
         validateSuperUserAccessAsync()
                 .thenAcceptAsync(__ -> {
                     pulsar().getBrokerService().monitorBacklogQuota();
@@ -371,6 +383,7 @@ public class BrokersBase extends AdminResource {
     @ApiParam(value = "Topic Version")
     public void healthCheck(@Suspended AsyncResponse asyncResponse,
                             @QueryParam("topicVersion") TopicVersion topicVersion) {
+        //针对Broker进行健康检查
         validateSuperUserAccessAsync()
                 .thenAccept(__ -> checkDeadlockedThreads())
                 .thenCompose(__ -> internalRunHealthCheck(topicVersion))
@@ -384,6 +397,7 @@ public class BrokersBase extends AdminResource {
                 });
     }
 
+    //检查死锁线程
     private void checkDeadlockedThreads() {
         ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
         long[] threadIds = threadBean.findDeadlockedThreads();
@@ -562,6 +576,7 @@ public class BrokersBase extends AdminResource {
             @QueryParam("forcedTerminateTopic") @DefaultValue("true") boolean forcedTerminateTopic,
             @Suspended final AsyncResponse asyncResponse
     ) {
+        //优雅的关闭Broker节点
         validateSuperUserAccess();
         doShutDownBrokerGracefullyAsync(maxConcurrentUnloadPerSec, forcedTerminateTopic)
                 .thenAccept(__ -> {

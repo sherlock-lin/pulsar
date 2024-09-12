@@ -57,6 +57,7 @@ public class RedirectManager {
     }
 
     public CompletableFuture<Map<String, BrokerLookupData>> getAvailableBrokerLookupDataAsync() {
+        //尝试从缓存中读取Bundle跟Broker映射信息
         return brokerLookupDataLockManager.listLocks(LOADBALANCE_BROKERS_ROOT).thenCompose(availableBrokers -> {
             Map<String, BrokerLookupData> map = new ConcurrentHashMap<>();
             List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -78,6 +79,7 @@ public class RedirectManager {
     public CompletableFuture<Optional<LookupResult>> findRedirectLookupResultAsync() {
         String currentLMClassName = pulsar.getConfiguration().getLoadManagerClassName();
         boolean debug = ExtensibleLoadManagerImpl.debug(pulsar.getConfiguration(), log);
+        //尝试从缓存中读取Bundle跟Broker映射信息
         return getAvailableBrokerLookupDataAsync().thenApply(lookupDataMap -> {
             if (lookupDataMap.isEmpty()) {
                 String errorMsg = "No available broker found.";
@@ -112,6 +114,7 @@ public class RedirectManager {
                     candidateBrokers.add(value);
                 }
             });
+            //为什么是随机获取的呢？一个Bundle会同时归属于多个Broker机器吗
             var selectedBroker = candidateBrokers.get((int) (Math.random() * candidateBrokers.size()));
 
             return Optional.of(new LookupResult(selectedBroker.getWebServiceUrl(),

@@ -103,6 +103,7 @@ public class Consumer {
     // increase its availability
     private static final AtomicIntegerFieldUpdater<Consumer> MESSAGE_PERMITS_UPDATER =
             AtomicIntegerFieldUpdater.newUpdater(Consumer.class, "messagePermits");
+    // 这个许可是在什么时候分配的
     private volatile int messagePermits = 0;
     // It starts keep tracking of messagePermits once consumer gets blocked, as consumer needs two separate counts:
     // messagePermits (1) before and (2) after being blocked: to dispatch only blockedPermit number of messages at the
@@ -770,7 +771,7 @@ public class Consumer {
                 log.debug("[{}-{}] Added {} message permits in broker.service.Consumer before updating dispatcher "
                         + "for consumer {}", topicName, subscription, additionalNumberOfMessages, consumerId);
             }
-            // 通过订阅
+            // 处理消息拉取请求
             subscription.consumerFlow(this, additionalNumberOfMessages);
         } else {
             oldPermits = PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER.getAndAdd(this, additionalNumberOfMessages);
@@ -780,7 +781,6 @@ public class Consumer {
             log.debug("[{}-{}] Added more flow control message permits {} (old was: {}), blocked = {} ", topicName,
                     subscription, additionalNumberOfMessages, oldPermits, blockedConsumerOnUnackedMsgs);
         }
-
     }
 
     /**

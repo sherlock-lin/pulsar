@@ -318,12 +318,14 @@ public class PendingReadsManager {
                      final AsyncCallbacks.ReadEntriesCallback callback, Object ctx) {
         final PendingReadKey key = new PendingReadKey(firstEntry, lastEntry);
 
+        //获取当前Ledger在当前Broker的缓存
         Map<PendingReadKey, PendingRead> pendingReadsForLedger =
                 cachedPendingReads.computeIfAbsent(lh.getId(), (l) -> new ConcurrentHashMap<>());
 
         boolean listenerAdded = false;
         while (!listenerAdded) {
             AtomicBoolean createdByThisThread = new AtomicBoolean();
+            //循环查数据写到缓存中吗？
             FindPendingReadOutcome findBestCandidateOutcome = findPendingRead(key,
                     pendingReadsForLedger, createdByThisThread);
             PendingRead pendingRead = findBestCandidateOutcome.pendingRead;
@@ -434,6 +436,7 @@ public class PendingReadsManager {
 
 
             if (createdByThisThread.get()) {
+                //从Bookkeeper进行数据的读取
                 CompletableFuture<List<EntryImpl>> readResult = rangeEntryCache.readFromStorage(lh, firstEntry,
                         lastEntry, shouldCacheEntry);
                 pendingRead.attach(readResult);

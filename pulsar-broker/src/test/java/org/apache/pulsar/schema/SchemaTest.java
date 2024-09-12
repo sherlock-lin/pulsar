@@ -164,10 +164,14 @@ public class SchemaTest extends MockedPulsarServiceBaseTest {
                         (false).withSupportSchemaVersioning(true).
                         withPojo(Schemas.PersonOne.class).build()).getSchemaInfo());
 
+        SchemaInfo schemaInfo1 = admin.schemas().getSchemaInfo(fqtnOne);
+
         admin.schemas().createSchema(fqtnOne, Schema.AVRO(
                 SchemaDefinition.<Schemas.PersonTwo>builder().withAlwaysAllowNull
                         (false).withSupportSchemaVersioning(true).
                         withPojo(Schemas.PersonTwo.class).build()).getSchemaInfo());
+
+        SchemaInfo schemaInfo2 = admin.schemas().getSchemaInfo(fqtnOne);
 
         Schema<Schemas.PersonTwo> personTwoSchema = Schema.AVRO(
                 SchemaDefinition.<Schemas.PersonTwo>builder().withAlwaysAllowNull
@@ -185,7 +189,6 @@ public class SchemaTest extends MockedPulsarServiceBaseTest {
         Schemas.PersonTwo personTwo = new Schemas.PersonTwo();
         personTwo.setId(1);
         personTwo.setName("Tom");
-
 
         Consumer<Schemas.PersonTwo> consumer = pulsarClient.newConsumer(Schema.AVRO(
                 SchemaDefinition.<Schemas.PersonTwo>builder().withAlwaysAllowNull
@@ -285,7 +288,6 @@ public class SchemaTest extends MockedPulsarServiceBaseTest {
         personTwo.setId(1);
         personTwo.setName("Tom");
 
-
         Consumer<KeyValue<String, Schemas.PersonTwo>> consumer = pulsarClient.newConsumer(Schema.KeyValue(Schema.STRING, Schema.AVRO(
                 SchemaDefinition.<Schemas.PersonTwo>builder().withAlwaysAllowNull
                         (false).withSupportSchemaVersioning(true).
@@ -338,7 +340,6 @@ public class SchemaTest extends MockedPulsarServiceBaseTest {
                 namespace,
                 topicOne
         ).toString();
-
 
         admin.namespaces().createNamespace(
                 tenant + "/" + namespace,

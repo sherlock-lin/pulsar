@@ -101,7 +101,7 @@ public class PersistentSubscription extends AbstractSubscription implements Subs
     protected final PersistentTopic topic;
     //管理消费的游标(如果Broker重启了这个数据会不会丢？)
     protected final ManagedCursor cursor;
-    //调度，负责什么的调度呢？
+    //调度，负责什么的调度呢？负责消息推送的事情
     protected volatile Dispatcher dispatcher;
     protected final String topicName;
     protected final String subName;
@@ -366,6 +366,7 @@ public class PersistentSubscription extends AbstractSubscription implements Subs
     @Override
     public void consumerFlow(Consumer consumer, int additionalNumberOfMessages) {
         this.lastConsumedFlowTimestamp = System.currentTimeMillis();
+        //最终调用者是dispatcher
         dispatcher.consumerFlow(consumer, additionalNumberOfMessages);
     }
 
@@ -1147,14 +1148,18 @@ public class PersistentSubscription extends AbstractSubscription implements Subs
 
     @Override
     public boolean expireMessages(int messageTTLInSeconds) {
+        //获取当前积压消息的条数(指的就是未被消费的消息条数)
         long backlog = getNumberOfEntriesInBacklog(false);
+
         if (backlog == 0 || (dispatcher != null && dispatcher.isConsumerConnected()
                 && backlog < MINIMUM_BACKLOG_FOR_EXPIRY_CHECK
+                //判断最早的那条消息是否过期对吗？
                 && !topic.isOldestMessageExpired(cursor, messageTTLInSeconds))) {
             // don't do anything for almost caught-up connected subscriptions
             return false;
         }
         this.lastExpireTimestamp = System.currentTimeMillis();
+        //更新过期消息的下标，从这里继续跟踪
         return expiryMonitor.expireMessages(messageTTLInSeconds);
     }
 

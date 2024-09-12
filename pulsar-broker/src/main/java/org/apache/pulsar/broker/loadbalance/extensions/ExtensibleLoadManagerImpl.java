@@ -102,6 +102,7 @@ import org.apache.pulsar.metadata.api.coordination.LeaderElectionState;
 import org.slf4j.Logger;
 
 @Slf4j
+//通过实现不同的负载均衡逻辑来给Bundle找到合适的Broker
 public class ExtensibleLoadManagerImpl implements ExtensibleLoadManager {
 
     public static final String BROKER_LOAD_DATA_STORE_TOPIC = TopicName.get(
@@ -194,14 +195,18 @@ public class ExtensibleLoadManagerImpl implements ExtensibleLoadManager {
 
     /**
      * Get all the bundles that are owned by this broker.
+     * 获取当前Broker所负责的所有Bundle
      */
     public Set<NamespaceBundle> getOwnedServiceUnits() {
         if (!started) {
             log.warn("Failed to get owned service units, load manager is not started.");
             return Collections.emptySet();
         }
+
+        //获取Bundle列表
         Set<Map.Entry<String, ServiceUnitStateData>> entrySet = serviceUnitStateChannel.getOwnershipEntrySet();
         String brokerId = brokerRegistry.getBrokerId();
+
         Set<NamespaceBundle> ownedServiceUnits = entrySet.stream()
                 .filter(entry -> {
                     var stateData = entry.getValue();
@@ -212,6 +217,7 @@ public class ExtensibleLoadManagerImpl implements ExtensibleLoadManager {
                     var bundle = entry.getKey();
                     return getNamespaceBundle(pulsar, bundle);
                 }).collect(Collectors.toSet());
+
         // Add heartbeat and SLA monitor namespace bundle.
         NamespaceName heartbeatNamespace = NamespaceService.getHeartbeatNamespace(brokerId, pulsar.getConfiguration());
         try {

@@ -84,6 +84,7 @@ public class TopicLookupBase extends PulsarWebResource {
                                 String.format("Topic not found %s", topicName.toString()));
                     }
                     CompletableFuture<Optional<LookupResult>> lookupFuture = pulsar().getNamespaceService()
+                            //获得目标Broker地址
                             .getBrokerServiceUrlAsync(topicName,
                                     LookupOptions.builder()
                                             .advertisedListenerName(listenerName)

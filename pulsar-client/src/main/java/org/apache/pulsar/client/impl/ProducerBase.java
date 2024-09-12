@@ -152,8 +152,10 @@ public abstract class ProducerBase<T> extends HandlerState implements Producer<T
 
     protected Message<?> beforeSend(Message<?> message) {
         if (interceptors != null) {
+            //如果配置了拦截器则调用ProducerInterceptors类的beforeSend方法
             return interceptors.beforeSend(this, message);
         } else {
+            //如果没有配置拦截器则直接返回原消息
             return message;
         }
     }

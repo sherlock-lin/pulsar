@@ -943,6 +943,7 @@ public abstract class AbstractTopic implements Topic, TopicPolicyListener<TopicP
             log.debug("[{}] {} Got request to create producer ", topic, producer.getProducerName());
         }
 
+        //producers是ConcurrentHashMap结构，相当于会在PersistentTopic中维护服务端的生产者对象
         Producer existProducer = producers.putIfAbsent(producer.getProducerName(), producer);
         if (existProducer != null) {
             return tryOverwriteOldProducer(existProducer, producer);

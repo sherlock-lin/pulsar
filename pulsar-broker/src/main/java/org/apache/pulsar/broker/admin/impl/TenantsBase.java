@@ -52,6 +52,7 @@ import org.apache.pulsar.common.util.FutureUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+//租户相关的管理
 public class TenantsBase extends PulsarWebResource {
 
     private static final Logger log = LoggerFactory.getLogger(TenantsBase.class);
@@ -139,6 +140,7 @@ public class TenantsBase extends PulsarWebResource {
                         }
                     }
                 })
+                //核心逻辑，进行租户的创建。会在zk上新建一个目录
                 .thenCompose(__ -> tenantResources().createTenantAsync(tenant, tenantInfo))
                 .thenAccept(__ -> {
                     log.info("[{}] Created tenant {}", clientAppId, tenant);
@@ -176,6 +178,7 @@ public class TenantsBase extends PulsarWebResource {
                     Set<String> newClusters = new HashSet<>(newTenantAdmin.getAllowedClusters());
                     return canUpdateCluster(tenant, oldTenantAdmin.getAllowedClusters(), newClusters);
                 })
+                //更新租户配置
                 .thenCompose(__ -> tenantResources().updateTenantAsync(tenant, old -> newTenantAdmin))
                 .thenAccept(__ -> {
                     log.info("[{}] Successfully updated tenant info {}", clientAppId, tenant);

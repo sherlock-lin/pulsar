@@ -27,6 +27,8 @@ import org.apache.pulsar.policies.data.loadbalancer.BundleData;
  * strategy. For example, the placement strategy may determine that the broker with the least msg/s should get the
  * bundle assignment, but we may not want to consider brokers whose CPU usage is very high. Thus, we could use a filter
  * to exclude brokers with high CPU usage.
+ *
+ * 放置策略可能会决定，msg/s 最低的代理服务器应获得捆绑分配，但我们可能不想考虑 CPU 使用率非常高的代理。因此，我们可以使用过滤器来排除 CPU 使用率高的代理
  */
 public interface BrokerFilter {
 

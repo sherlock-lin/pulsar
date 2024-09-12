@@ -92,6 +92,7 @@ public class Namespaces extends NamespacesBase {
             @ApiResponse(code = 404, message = "Tenant doesn't exist")})
     public void getTenantNamespaces(@Suspended final AsyncResponse response,
                                     @PathParam("tenant") String tenant) {
+        //获取Namespace信息
         internalGetTenantNamespaces(tenant)
                 .thenAccept(response::resume)
                 .exceptionally(ex -> {
@@ -838,9 +839,11 @@ public class Namespaces extends NamespacesBase {
             @PathParam("bundle") String bundleRange,
             @QueryParam("authoritative") @DefaultValue("false") boolean authoritative,
             @QueryParam("unload") @DefaultValue("false") boolean unload,
-            @QueryParam("splitAlgorithmName") String splitAlgorithmName,
+            @QueryParam("splitAlgorithmName") String splitAlgorithmName,  //指定bundle分裂算法
             @ApiParam("splitBoundaries") List<Long> splitBoundaries) {
+        //校验参数格式以及是否存在对应的namespace
         validateNamespaceName(tenant, namespace);
+        //异步进行分裂操作
         internalSplitNamespaceBundleAsync(bundleRange, authoritative, unload, splitAlgorithmName, splitBoundaries)
                 .thenAccept(__ -> {
                     log.info("[{}] Successfully split namespace bundle {}", clientAppId(), bundleRange);

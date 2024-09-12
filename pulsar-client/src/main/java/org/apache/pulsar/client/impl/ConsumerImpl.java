@@ -132,14 +132,17 @@ import org.slf4j.LoggerFactory;
 public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandler.Connection {
     private static final int MAX_REDELIVER_UNACKNOWLEDGED = 1000;
 
+    //消费者ID，应该是用于唯一标识
     final long consumerId;
 
     // Number of messages that have delivered to the application. Every once in a while, this number will be sent to the
     // broker to notify that we are ready to get (and store in the incoming messages queue) more messages
     @SuppressWarnings("rawtypes")
+
     private static final AtomicIntegerFieldUpdater<ConsumerImpl> AVAILABLE_PERMITS_UPDATER = AtomicIntegerFieldUpdater
             .newUpdater(ConsumerImpl.class, "availablePermits");
     @SuppressWarnings("unused")
+    //告知Broker当前消费者的消费状态，用于让Broker进行消费流量调节
     private volatile int availablePermits = 0;
 
     protected volatile MessageId lastDequeuedMessageId = MessageId.earliest;
@@ -175,10 +178,12 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     private volatile boolean hasReachedEndOfTopic;
 
+    //用于编解码消息
     private final MessageCrypto msgCrypto;
 
     private final Map<String, String> metadata;
 
+    //进行读压缩
     private final boolean readCompacted;
     private final boolean resetIncludeHead;
 
@@ -190,11 +195,14 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     private final Map<MessageIdAdv, List<MessageImpl<T>>> possibleSendToDeadLetterTopicMessages;
 
+    //死信队列策略
     private final DeadLetterPolicy deadLetterPolicy;
 
+    //死信队列生产者
     private volatile CompletableFuture<Producer<byte[]>> deadLetterProducer;
 
     private volatile Producer<byte[]> retryLetterProducer;
+    //生产者读写锁
     private final ReadWriteLock createProducerLock = new ReentrantReadWriteLock();
 
     protected volatile boolean paused;
@@ -209,8 +217,10 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
     // on the topic) then it guards against broken chunked message which was not fully published
     private final boolean autoAckOldestChunkedMessageOnQueueFull;
     // it will be used to manage N outstanding chunked message buffers
+    //管理分块消息未完成的缓冲区
     private final BlockingQueue<String> pendingChunkedMessageUuidQueue;
 
+    //Topic不存在的情况是否自动创建
     private final boolean createTopicIfDoesNotExist;
     private final boolean poolMessages;
 

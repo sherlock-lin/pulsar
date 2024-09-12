@@ -25,7 +25,9 @@ import org.apache.pulsar.broker.PulsarService;
 public class ConsistentHashingTopicBundleAssigner implements TopicBundleAssignmentStrategy {
     @Override
     public NamespaceBundle findBundle(TopicName topicName, NamespaceBundles namespaceBundles) {
+        //计算Topic名称的哈希值
         long hashCode = Hashing.crc32().hashString(topicName.toString(), StandardCharsets.UTF_8).padToLong();
+        //根据哈希值来获取所归属的bundle，一致性哈希的设计
         NamespaceBundle bundle = namespaceBundles.getBundle(hashCode);
         if (topicName.getDomain().equals(TopicDomain.non_persistent)) {
             bundle.setHasNonPersistentTopic(true);

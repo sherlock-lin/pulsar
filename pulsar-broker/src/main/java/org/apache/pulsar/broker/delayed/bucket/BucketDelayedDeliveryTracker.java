@@ -127,6 +127,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
         this.maxIndexesPerBucketSnapshotSegment = maxIndexesPerBucketSnapshotSegment;
         this.maxNumBuckets = maxNumBuckets;
         this.sharedBucketPriorityQueue = new TripleLongPriorityQueue();
+        //这个结构适合做什么
         this.immutableBuckets = TreeRangeMap.create();
         this.snapshotSegmentLastIndexTable = HashBasedTable.create();
         this.lastMutableBucket =
@@ -136,6 +137,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
         this.numberDelayedMessages = recoverBucketSnapshot();
     }
 
+    //从镜像进行恢复
     private synchronized long recoverBucketSnapshot() throws RuntimeException {
         ManagedCursor cursor = this.lastMutableBucket.getCursor();
         Map<String, String> cursorProperties = cursor.getCursorProperties();
@@ -222,6 +224,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
         return numberDelayedMessages.getValue();
     }
 
+    //往里面放数据？
     private synchronized void putAndCleanOverlapRange(Range<Long> range, ImmutableBucket immutableBucket,
                                                       Map<Range<Long>, ImmutableBucket> toBeDeletedBucketMap) {
         RangeMap<Long, ImmutableBucket> subRangeMap = immutableBuckets.subRangeMap(range);

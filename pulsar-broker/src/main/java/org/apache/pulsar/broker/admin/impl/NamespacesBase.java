@@ -129,12 +129,14 @@ public abstract class NamespacesBase extends AdminResource {
             log.warn("[{}] Tenant name is invalid {}", clientAppId(), tenant, e);
             return FutureUtil.failedFuture(new RestException(Status.PRECONDITION_FAILED, "Tenant name is not valid"));
         }
+        //参数校验
         return validateTenantOperationAsync(tenant, TenantOperation.LIST_NAMESPACES)
                 .thenCompose(__ -> tenantResources().tenantExistsAsync(tenant))
                 .thenCompose(existed -> {
                     if (!existed) {
                         throw new RestException(Status.NOT_FOUND, "Tenant not found");
                     }
+                    //获取Namespace信息
                     return tenantResources().getListOfNamespacesAsync(tenant);
                 });
     }
@@ -1046,13 +1048,14 @@ public abstract class NamespacesBase extends AdminResource {
                                                                         boolean authoritative, boolean unload,
                                                                         String splitAlgorithmName,
                                                                         List<Long> splitBoundaries) {
-        return validateSuperUserAccessAsync()
+        return validateSuperUserAccessAsync()   //权限校验
                 .thenAccept(__ -> {
                     checkNotNull(bundleName, "BundleRange should not be null");
                     log.info("[{}] Split namespace bundle {}/{}", clientAppId(), namespaceName, bundleName);
+                    //获取当前集群所支持的bundle分裂算法，这里是硬编码的固定四种
                     List<String> supportedNamespaceBundleSplitAlgorithms =
                             pulsar().getConfig().getSupportedNamespaceBundleSplitAlgorithms();
-                    if (StringUtils.isNotBlank(splitAlgorithmName)) {
+                    if (StringUtils.isNotBlank(splitAlgorithmName)) {   //这个判断空可以考虑去掉，应该是给默认值不是吗？
                         if (!supportedNamespaceBundleSplitAlgorithms.contains(splitAlgorithmName)) {
                             throw new RestException(Status.PRECONDITION_FAILED,
                                     "Unsupported namespace bundle split algorithm, supported algorithms are "
@@ -1077,13 +1080,15 @@ public abstract class NamespacesBase extends AdminResource {
                                         namespaceName.getCluster()));
                     }
                 })
-                .thenCompose(__ -> validatePoliciesReadOnlyAccessAsync())
-                .thenCompose(__ -> getBundleRangeAsync(bundleName))
+                .thenCompose(__ -> validatePoliciesReadOnlyAccessAsync())   //权限校验
+                .thenCompose(__ -> getBundleRangeAsync(bundleName)) //获取bundle的范围
                 .thenCompose(bundleRange -> {
                     return getNamespacePoliciesAsync(namespaceName)
                             .thenCompose(policies ->
+                                    //1. 校验Bundle的范围是否有效 2.判断当前Broker节点是否负责这个bundle的管理，如果不是则重定向
                                     validateNamespaceBundleOwnershipAsync(namespaceName, policies.bundles, bundleRange,
                                         authoritative, false))
+                            //核心方法就是这里的 NamespaceService.splitAndOwnBundle
                             .thenCompose(nsBundle -> pulsar().getNamespaceService().splitAndOwnBundle(nsBundle, unload,
                                     pulsar().getNamespaceService()
                                             .getNamespaceBundleSplitAlgorithmByName(splitAlgorithmName),

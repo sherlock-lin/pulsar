@@ -81,9 +81,11 @@ public class HttpLookupService implements LookupService {
     @Override
     @SuppressWarnings("deprecation")
     public CompletableFuture<LookupTopicResult> getBroker(TopicName topicName) {
+        //判断访问哪个版本的接口
         String basePath = topicName.isV2() ? BasePathV2 : BasePathV1;
         String path = basePath + topicName.getLookupName();
         path = StringUtils.isBlank(listenerName) ? path : path + "?listenerName=" + Codec.encode(listenerName);
+        //获取要访问的Broker地址
         return httpClient.get(path, LookupData.class)
                 .thenCompose(lookupData -> {
             // Convert LookupData into as SocketAddress, handling exceptions
@@ -99,7 +101,10 @@ public class HttpLookupService implements LookupService {
                     uri = new URI(serviceUrl);
                 }
 
+                //解析服务端返回的数据，本质上就是返回的就是Topic所在Broker的节点IP+端口
                 InetSocketAddress brokerAddress = InetSocketAddress.createUnresolved(uri.getHost(), uri.getPort());
+                //返回值是kv
+                //HTTP通过Lookup方式访问服务端绝对不会走代理
                 return CompletableFuture.completedFuture(new LookupTopicResult(brokerAddress, brokerAddress,
                         false /* HTTP lookups never use the proxy */));
             } catch (Exception e) {

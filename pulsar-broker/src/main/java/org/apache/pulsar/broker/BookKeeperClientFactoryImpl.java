@@ -78,6 +78,7 @@ public class BookKeeperClientFactoryImpl implements BookKeeperClientFactory {
             setDefaultEnsemblePlacementPolicy(bkConf, conf, store);
         }
         try {
+            //获取BookKeeper的客户端构建对象进行创建
             return getBookKeeperBuilder(conf, eventLoopGroup, statsLogger, bkConf).build();
         } catch (InterruptedException | BKException e) {
             throw new IOException(e);

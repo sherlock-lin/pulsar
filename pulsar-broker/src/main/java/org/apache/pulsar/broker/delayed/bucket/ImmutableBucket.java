@@ -40,6 +40,7 @@ import org.roaringbitmap.InvalidRoaringFormat;
 import org.roaringbitmap.RoaringBitmap;
 
 @Slf4j
+//不可变Bucket？
 class ImmutableBucket extends Bucket {
 
     @Setter

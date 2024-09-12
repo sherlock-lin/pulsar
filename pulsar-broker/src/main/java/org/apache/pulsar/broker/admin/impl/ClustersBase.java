@@ -85,6 +85,7 @@ public class ClustersBase extends AdminResource {
             @ApiResponse(code = 500, message = "Internal server error.")
     })
     public void getClusters(@Suspended AsyncResponse asyncResponse) {
+        //获取Pulsar集群列表
         clusterResources().listAsync()
                 .thenApply(clusters -> clusters.stream()
                         // Remove "global" cluster from returned list
@@ -159,6 +160,7 @@ public class ClustersBase extends AdminResource {
                 )
             )
         ) ClusterDataImpl clusterData) {
+        //创建一个Pulsar新集群
         validateSuperUserAccessAsync()
                 .thenCompose(__ -> validatePoliciesReadOnlyAccessAsync())
                 .thenCompose(__ -> {
@@ -268,6 +270,7 @@ public class ClustersBase extends AdminResource {
             required = true
         )
         @PathParam("cluster") String cluster) {
+        //迁移A集群配置到指定集群
         validateSuperUserAccessAsync()
                 .thenCompose(__ -> clusterResources().getClusterPoliciesResources().getClusterPoliciesAsync(cluster))
                 .thenAccept(policies -> {

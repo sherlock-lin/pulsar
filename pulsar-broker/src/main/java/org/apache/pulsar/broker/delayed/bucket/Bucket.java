@@ -40,6 +40,7 @@ import org.roaringbitmap.RoaringBitmap;
 @Slf4j
 @Data
 @AllArgsConstructor
+//这是干嘛的？？？
 abstract class Bucket {
 
     static final String DELIMITER = "_";

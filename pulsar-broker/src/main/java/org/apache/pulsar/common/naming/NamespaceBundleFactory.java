@@ -319,6 +319,7 @@ public class NamespaceBundleFactory {
      */
     public CompletableFuture<Pair<NamespaceBundles, List<NamespaceBundle>>> splitBundles(
             NamespaceBundle targetBundle, int argNumBundles, List<Long> splitBoundaries) {
+        //判断当前bundle是否支持分裂
         checkArgument(canSplitBundle(targetBundle),
                 "%s bundle can't be split further since range not larger than 1", targetBundle);
         if (splitBoundaries != null && splitBoundaries.size() > 0) {
@@ -335,13 +336,16 @@ public class NamespaceBundleFactory {
         final int numBundles = argNumBundles;
 
         return bundlesCache.get(nsname).thenApply(sourceBundle -> {
+            //分割前的Bundle数量
             final int lastIndex = sourceBundle.partitions.length - 1;
 
+            //重新创建数组保存哈希环的节点，因为bundle分裂后环上的节点会增多
             final long[] partitions = new long[sourceBundle.partitions.length + (numBundles - 1)];
             int pos = 0;
             int splitPartition = -1;
             final Range<Long> range = targetBundle.getKeyRange();
             for (int i = 0; i < lastIndex; i++) {
+                //遍历当前Namespace的所有Bundle来找到需要进行分裂的目标Bundle
                 if (sourceBundle.partitions[i] == range.lowerEndpoint()
                         && (range.upperEndpoint() == sourceBundle.partitions[i + 1])) {
                     splitPartition = i;
@@ -349,6 +353,7 @@ public class NamespaceBundleFactory {
                     partitions[pos++] = minVal;
                     if (splitBoundaries == null || splitBoundaries.size() == 0) {
                         long maxVal = sourceBundle.partitions[i + 1];
+                        //numBundles就是要分割成的份数，这里相当于将原先Bundle负责的范围平均分给多个新的Bundle
                         long segSize = (maxVal - minVal) / numBundles;
                         long curPartition = minVal + segSize;
                         for (int j = 0; j < numBundles - 1; j++) {
@@ -365,9 +370,11 @@ public class NamespaceBundleFactory {
                     partitions[pos++] = sourceBundle.partitions[i];
                 }
             }
+
             partitions[pos] = sourceBundle.partitions[lastIndex];
             if (splitPartition != -1) {
                 // keep version of sourceBundle
+                //根据上面旧的Bundle范围划分来分裂出多个新的bundle
                 NamespaceBundles splitNsBundles =
                         new NamespaceBundles(nsname, this, sourceBundle.getLocalPolicies(), partitions);
                 List<NamespaceBundle> splitBundles = splitNsBundles.getBundles().subList(splitPartition,

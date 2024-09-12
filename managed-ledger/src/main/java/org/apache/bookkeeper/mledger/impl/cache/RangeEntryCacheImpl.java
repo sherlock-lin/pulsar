@@ -320,6 +320,7 @@ public class RangeEntryCacheImpl implements EntryCache {
         // 缓存实现是ConcurrentSkipListMap value是堆外内存
         Collection<EntryImpl> cachedEntries = entries.getRange(firstPosition, lastPosition);
 
+        //如果全部命中缓存则直接返回，否则往下走
         // 数量一致
         if (cachedEntries.size() == entriesToRead) {
             long totalCachedSize = 0;

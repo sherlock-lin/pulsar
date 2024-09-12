@@ -457,10 +457,14 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
         if (log.isDebugEnabled()) {
             log.debug("Updating broker and bundle data for loadreport");
         }
+        //清理异常Broker节点的负载均衡相关信息
         cleanupDeadBrokersData();
+        //从缓存或者zookeeper中读取信息更新本机所维护的brokerDataMap数据
         updateAllBrokerData();
+        // 轮询BrokerData中，每个Broker下的Bundle数据进行更新
         updateBundleData();
         // broker has latest load-report: check if any bundle requires split
+        //检查是否有需要进行分割的bundle
         checkNamespaceBundleSplit();
     }
 
@@ -471,6 +475,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
         this.knownBrokers.addAll(activeBrokers);
         if (pulsar.getLeaderElectionService() != null
                 && pulsar.getLeaderElectionService().isLeader()) {
+            //清理异常Broker节点的负载均衡相关信息
             deadBrokers.forEach(this::deleteTimeAverageDataFromMetadataStoreAsync);
             for (LoadSheddingStrategy loadSheddingStrategy : loadSheddingPipeline) {
                 loadSheddingStrategy.onActiveBrokersChange(activeBrokers);
@@ -496,6 +501,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
 
                 if (brokerDataMap.containsKey(broker)) {
                     // Replace previous local broker data.
+                    //从缓存或者zookeeper中读取信息更新本机所维护的brokerDataMap数据
                     brokerDataMap.get(broker).setLocalData(localData.get());
                 } else {
                     // Initialize BrokerData object for previously unseen
@@ -520,6 +526,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
         final Map<String, BundleData> bundleData = loadData.getBundleData();
         final Set<String> activeBundles = new HashSet<>();
         // Iterate over the broker data.
+        // 轮询BrokerData中，每个Broker下的Bundle数据进行更新
         for (Map.Entry<String, BrokerData> brokerEntry : loadData.getBrokerData().entrySet()) {
             final String broker = brokerEntry.getKey();
             final BrokerData brokerData = brokerEntry.getValue();
@@ -527,6 +534,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
 
             // Iterate over the last bundle stats available to the current
             // broker to update the bundle data.
+            // 更新bundle数据
             for (Map.Entry<String, NamespaceBundleStats> entry : statsMap.entrySet()) {
                 final String bundle = entry.getKey();
                 final NamespaceBundleStats stats = entry.getValue();
@@ -578,6 +586,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
         }
 
         // Remove not active bundle from loadData
+        // 移除不存活的bundle信息
         for (String bundle : bundleData.keySet()) {
             if (!activeBundles.contains(bundle)){
                 bundleData.remove(bundle);
@@ -737,12 +746,14 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
     @Override
     public void checkNamespaceBundleSplit() {
 
+        // 如果配置开启自动Bundle分裂、当前Broker是Leader、Broker集群节点不止一台才会继续分裂操作，否则在这里就结束了
         if (!conf.isLoadBalancerAutoBundleSplitEnabled() || pulsar.getLeaderElectionService() == null
                 || !pulsar.getLeaderElectionService().isLeader() || knownBrokers.size() <= 1) {
             return;
         }
         final boolean unloadSplitBundles = pulsar.getConfiguration().isLoadBalancerAutoUnloadSplitBundlesEnabled();
         synchronized (bundleSplitStrategy) {
+            // 获取需要进行分裂操作的bundle列表
             final Map<String, String> bundlesToBeSplit = bundleSplitStrategy.findBundlesToSplit(loadData, pulsar);
             NamespaceBundleFactory namespaceBundleFactory = pulsar.getNamespaceService().getNamespaceBundleFactory();
             int splitCount = 0;
@@ -756,6 +767,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
                     }
 
                     // Make sure the same bundle is not selected again.
+                    // 确保同一个bundle不会反复被选中
                     loadData.getBundleData().remove(bundleName);
                     localData.getLastStats().remove(bundleName);
                     // Clear namespace bundle-cache

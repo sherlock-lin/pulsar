@@ -53,7 +53,7 @@ public class BaseResources<T> {
     @Getter
     private final MetadataStore store;
     @Getter
-    private final MetadataCache<T> cache;
+    private final MetadataCache<T> cache; //存的是什么
     private int operationTimeoutSec;
 
     public BaseResources(MetadataStore store, Class<T> clazz, int operationTimeoutSec) {

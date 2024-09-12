@@ -34,6 +34,7 @@ import org.slf4j.LoggerFactory;
  */
 public abstract class AbstractDispatcherMultipleConsumers extends AbstractBaseDispatcher {
 
+    //维护其管理的消费者对象
     protected final CopyOnWriteArrayList<Consumer> consumerList = new CopyOnWriteArrayList<>();
     protected final ObjectSet<Consumer> consumerSet = new ObjectHashSet<>();
     protected volatile int currentConsumerRoundRobinIndex = 0;

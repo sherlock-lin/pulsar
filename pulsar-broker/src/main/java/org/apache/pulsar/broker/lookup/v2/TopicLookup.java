@@ -66,6 +66,7 @@ public class TopicLookup extends TopicLookupBase {
         if (StringUtils.isEmpty(listenerName) && StringUtils.isNotEmpty(listenerNameHeader)) {
             listenerName = listenerNameHeader;
         }
+        //可以看得到这里 1. 获取Topic所归属的Bundle  2. 查询Bundle所归属的Broker 3. 返回该Broker的url
         internalLookupTopicAsync(topicName, authoritative, listenerName)
                 .thenAccept(lookupData -> asyncResponse.resume(lookupData))
                 .exceptionally(ex -> {

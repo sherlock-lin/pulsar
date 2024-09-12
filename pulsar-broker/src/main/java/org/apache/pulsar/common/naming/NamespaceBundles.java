@@ -44,7 +44,7 @@ public class NamespaceBundles {
     protected final long[] partitions;
 
     public static final Long FULL_LOWER_BOUND = 0x00000000L;
-    public static final Long FULL_UPPER_BOUND = 0xffffffffL;
+    public static final Long FULL_UPPER_BOUND = 0xffffffffL; //十进制的42亿多
 
     private final NamespaceBundle fullBundle;
     private final Optional<Pair<LocalPolicies, Long>> localPolicies;
@@ -78,6 +78,7 @@ public class NamespaceBundles {
 
         this.partitions = partitions;
         long lowerBound = partitions[0];
+        //partitions是根据分割算法进行分割后的，在这里遍历分配它们所负责的范围
         for (int i = 1; i < partitions.length; i++) {
             long upperBound = partitions[i];
             checkArgument(upperBound >= lowerBound);
@@ -118,6 +119,7 @@ public class NamespaceBundles {
     }
 
     protected NamespaceBundle getBundle(long hash) {
+        //通过数组的二分查找进行计算，数组的元素个数跟存储Bundle的bundles的集合大小是一样的，能获取对应的Bundle
         int idx = Arrays.binarySearch(partitions, hash);
         int lowerIdx = idx < 0 ? -(idx + 2) : idx;
         return bundles.get(lowerIdx);

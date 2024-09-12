@@ -796,7 +796,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         // 读取 第二层回调
         OpReadEntry op =
                 OpReadEntry.create(this, readPosition, numOfEntriesToRead, callback, ctx, maxPosition, skipCondition);
-        //核心方法，从这里进去
+        //核心方法，从这里进去读取
         ledger.asyncReadEntries(op);
     }
 
@@ -1119,6 +1119,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                     ledger.getName(), name, ManagedLedgerImpl.ENTRIES_ADDED_COUNTER_UPDATER.get(ledger),
                     messagesConsumedCounter, markDeletePosition, readPosition);
         }
+        //检测消息过期任务传入的是false
         if (isPrecise) {
             if (markDeletePosition.compareTo(ledger.getLastPosition()) >= 0) {
                 return 0;
@@ -1126,12 +1127,13 @@ public class ManagedCursorImpl implements ManagedCursor {
             return getNumberOfEntries(Range.openClosed(markDeletePosition, ledger.getLastPosition()));
         }
 
+        //
         long backlog = ManagedLedgerImpl.ENTRIES_ADDED_COUNTER_UPDATER.get(ledger) - messagesConsumedCounter;
         if (backlog < 0) {
             // In some case the counters get incorrect values, fall back to the precise backlog count
+            //获取从上一个标记删除的位置到当前最新写入的位置(是写入还是最新读到的位置？)
             backlog = getNumberOfEntries(Range.openClosed(markDeletePosition, ledger.getLastPosition()));
         }
-
         return backlog;
     }
 
@@ -1570,6 +1572,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     }
 
     protected long getNumberOfEntries(Range<PositionImpl> range) {
+        //获取这个范围的消息条数
         long allEntries = ledger.getNumberOfEntries(range);
 
         if (log.isDebugEnabled()) {
@@ -1614,6 +1617,7 @@ public class ManagedCursorImpl implements ManagedCursor {
             log.debug("[{}] Found {} entries - deleted: {}", ledger.getName(), allEntries - deletedEntries.get(),
                     deletedEntries);
         }
+        //总数减去应该删除的条数？得到的是应该保留的消息条数
         return allEntries - deletedEntries.get();
 
     }
@@ -1960,6 +1964,7 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         PositionImpl newPosition = (PositionImpl) position;
 
+        //这是干嘛的？
         if (config.isDeletionAtBatchIndexLevelEnabled()) {
             if (newPosition.ackSet != null) {
                 AtomicReference<BitSetRecyclable> bitSetRecyclable = new AtomicReference<>();
@@ -2035,6 +2040,7 @@ public class ManagedCursorImpl implements ManagedCursor {
             callback.markDeleteComplete(ctx);
             return;
         }
+        //异步标记删除位置
         internalAsyncMarkDelete(newPosition, properties, callback, ctx);
     }
 
@@ -2069,6 +2075,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                     pendingMarkDeleteOps.add(mdEntry);
                 } else {
                     // Execute the mark delete immediately
+                    //进行标记删除
                     internalMarkDelete(mdEntry);
                 }
                 break;
@@ -2188,6 +2195,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                         mdEntry.ctx);
             }
         } else {
+            //持久化游标信息到Bookkeeper
             persistPositionToLedger(cursorLedger, mdEntry, cb);
         }
     }
@@ -3091,6 +3099,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     }
 
     void persistPositionToLedger(final LedgerHandle lh, MarkDeleteEntry mdEntry, final VoidCallback callback) {
+
         PositionImpl position = mdEntry.newPosition;
         PositionInfo pi = PositionInfo.newBuilder().setLedgerId(position.getLedgerId())
                 .setEntryId(position.getEntryId())
@@ -3106,6 +3115,7 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         requireNonNull(lh);
         byte[] data = pi.toByteArray();
+        //调用Bookkeeper客户端将游标信息写入
         lh.asyncAddEntry(data, (rc, lh1, entryId, ctx) -> {
             if (rc == BKException.Code.OK) {
                 if (log.isDebugEnabled()) {

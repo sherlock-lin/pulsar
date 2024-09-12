@@ -108,7 +108,6 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
     @Override
     public CompletableFuture<Consumer<T>> subscribeAsync() {
         //本方法主要做配置的校验，订阅相关的交给PulsarClientImpl.subscribeAsync
-
         if (conf.getTopicNames().isEmpty() && conf.getTopicsPattern() == null) {
             return FutureUtil
                     .failedFuture(new InvalidConfigurationException("Topic name must be set on the consumer builder"));

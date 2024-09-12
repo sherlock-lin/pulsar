@@ -82,17 +82,24 @@ import org.slf4j.LoggerFactory;
 /**
  *
  */
+//每个Topic在服务端都会维护一个PersistentDispatcherMultipleConsumers对象处理消费请求
 public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMultipleConsumers
         implements Dispatcher, ReadEntriesCallback {
 
+    //负责这个Topic的所有消息派发
     protected final PersistentTopic topic;
+    //管理这个Topic的游标
     protected final ManagedCursor cursor;
+    //记录消费标记位置
     protected volatile Range<PositionImpl> lastIndividualDeletedRangeFromCursorRecovery;
 
     private CompletableFuture<Void> closeFuture = null;
+    //负责相同消息的重复投递
     protected final MessageRedeliveryController redeliveryMessages;
+    //跟踪消息的重新投递
     protected final RedeliveryTracker redeliveryTracker;
 
+    //跟踪延迟消息
     private Optional<DelayedDeliveryTracker> delayedDeliveryTracker = Optional.empty();
 
     protected volatile boolean havePendingRead = false;
@@ -145,6 +152,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
                 ? new InMemoryRedeliveryTracker()
                 : RedeliveryTrackerDisabled.REDELIVERY_TRACKER_DISABLED;
         this.readBatchSize = serviceConfig.getDispatcherMaxReadBatchSize();
+        //初始化派发限速器
         this.initializeDispatchRateLimiterIfNeeded();
         this.assignor = new SharedConsumerAssignor(this::getNextConsumer, this::addMessageToReplay);
         this.readFailureBackoff = new Backoff(
@@ -183,6 +191,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
         }
 
         consumerList.add(consumer);
+        //如果新插入的消费者优先级偏高，则触发重排序
         if (consumerList.size() > 1
                 && consumer.getPriorityLevel() < consumerList.get(consumerList.size() - 2).getPriorityLevel()) {
             consumerList.sort(Comparator.comparingInt(Consumer::getPriorityLevel));
@@ -647,18 +656,24 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
      */
     protected synchronized boolean trySendMessagesToConsumers(ReadType readType, List<Entry> entries) {
         if (needTrimAckedMessages()) {
+            //如果消息ack足够多，则触发游标前移
             cursor.trimDeletedEntries(entries);
         }
 
+        //要派发消息的数量
         int entriesToDispatch = entries.size();
+
+        // 如果本次没有需要派发给消费者的消息，则触发读取更多的数据进行派发
         // Trigger read more messages
         if (entriesToDispatch == 0) {
             return true;
         }
+
         final MessageMetadata[] metadataArray = new MessageMetadata[entries.size()];
         int remainingMessages = 0;
         boolean hasChunk = false;
         for (int i = 0; i < metadataArray.length; i++) {
+            //循环获取每条消息的元数据
             final MessageMetadata metadata = Commands.peekAndCopyMessageMetadata(
                     entries.get(i).getDataBuffer(), subscription.toString(), -1);
             if (metadata != null) {
@@ -681,6 +696,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
 
         // If the dispatcher is closed, firstAvailableConsumerPermits will be 0, which skips dispatching the
         // messages.
+        // 循环将派发列表中的消息全部分发出去，同时需要判断是否有消费者在等待接受消息
         while (entriesToDispatch > 0 && isAtleastOneConsumerAvailable()) {
             Consumer c = getNextConsumer();
             if (c == null) {
@@ -722,10 +738,12 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
 
             EntryBatchSizes batchSizes = EntryBatchSizes.get(entriesForThisConsumer.size());
             EntryBatchIndexesAcks batchIndexesAcks = EntryBatchIndexesAcks.get(entriesForThisConsumer.size());
+           //这个方法是做什么的
             totalEntries += filterEntriesForConsumer(metadataArray, start,
                     entriesForThisConsumer, batchSizes, sendMessageInfo, batchIndexesAcks, cursor,
                     readType == ReadType.Replay, c);
 
+            //进行消息发送
             c.sendMessages(entriesForThisConsumer, batchSizes, batchIndexesAcks, sendMessageInfo.getTotalMessages(),
                     sendMessageInfo.getTotalBytes(), sendMessageInfo.getTotalChunkedMessages(), redeliveryTracker);
 
@@ -744,6 +762,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
             totalBytesSent += sendMessageInfo.getTotalBytes();
         }
 
+        //申请许可.....
         acquirePermitsForDeliveredMessages(topic, cursor, totalEntries, totalMessagesSent, totalBytesSent);
 
         if (entriesToDispatch > 0) {

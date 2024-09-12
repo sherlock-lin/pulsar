@@ -294,6 +294,7 @@ public class PersistentTopics extends PersistentTopicsBase {
             validatePartitionedTopicName(tenant, namespace, encodedTopic);
             validateTopicPolicyOperation(topicName, PolicyName.PARTITION, PolicyOperation.WRITE);
             validateCreateTopic(topicName);
+            //通过管理流创建分区Topic
             internalCreatePartitionedTopic(asyncResponse, numPartitions, createLocalTopicOnly);
         } catch (Exception e) {
             log.error("[{}] Failed to create partitioned topic {}", clientAppId(), topicName, e);
@@ -858,6 +859,7 @@ public class PersistentTopics extends PersistentTopicsBase {
             @PathParam("topic") @Encoded String encodedTopic) {
 
         try {
+            //这是什么场景？？？
             validatePartitionedTopicName(tenant, namespace, encodedTopic);
             internalCreateMissedPartitions(asyncResponse);
         } catch (Exception e) {

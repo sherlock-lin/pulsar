@@ -31,6 +31,7 @@ import org.apache.pulsar.policies.data.loadbalancer.BundleData;
 /**
  * Simple Round Robin Broker Selection Strategy.
  */
+//轮询Broker选择器，这里是在那里被使用的？
 public class RoundRobinBrokerSelector implements ModularLoadManagerStrategy {
 
     final AtomicInteger count = new AtomicInteger();

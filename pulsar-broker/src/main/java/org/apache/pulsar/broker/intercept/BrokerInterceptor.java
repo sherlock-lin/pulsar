@@ -40,6 +40,7 @@ import org.apache.pulsar.common.classification.InterfaceStability;
 import org.apache.pulsar.common.intercept.InterceptException;
 
 /**
+ * 允许用户通过插件来拦截客户端的请求
  * A plugin interface that allows you to intercept the
  * client requests to the Pulsar brokers.
  *

@@ -818,6 +818,7 @@ public class Namespaces extends NamespacesBase {
                               @PathParam("property") String property,
                               @PathParam("cluster") String cluster,
                               @PathParam("namespace") String namespace) {
+        //获取某个命名空间下Bundle的分割情况
         validateNamespaceName(property, cluster, namespace);
         validatePoliciesReadOnlyAccessAsync()
                 .thenCompose(__ -> validateNamespaceOperationAsync(NamespaceName.get(property, namespace),
@@ -849,6 +850,7 @@ public class Namespaces extends NamespacesBase {
             @ApiResponse(code = 412, message = "Namespace is already unloaded or Namespace has bundles activated")})
     public void unloadNamespace(@Suspended final AsyncResponse asyncResponse, @PathParam("property") String property,
             @PathParam("cluster") String cluster, @PathParam("namespace") String namespace) {
+        //下线一个Namespace
         try {
             validateNamespaceName(property, cluster, namespace);
         } catch (WebApplicationException wae) {
@@ -882,6 +884,7 @@ public class Namespaces extends NamespacesBase {
             @PathParam("namespace") String namespace, @PathParam("bundle") String bundleRange,
             @QueryParam("authoritative") @DefaultValue("false") boolean authoritative,
             @QueryParam("destinationBroker") String destinationBroker) {
+        //下线一个Bundle
         validateNamespaceName(property, cluster, namespace);
         internalUnloadNamespaceBundleAsync(bundleRange, destinationBroker, authoritative)
                 .thenAccept(__ -> {
@@ -914,12 +917,19 @@ public class Namespaces extends NamespacesBase {
             @PathParam("bundle") String bundleRange,
             @QueryParam("authoritative") @DefaultValue("false") boolean authoritative,
             @QueryParam("unload") @DefaultValue("false") boolean unload,
-            @QueryParam("splitAlgorithmName") String splitAlgorithmName,
+            @QueryParam("splitAlgorithmName") String splitAlgorithmName,    //指定bundle分裂算法
             @ApiParam("splitBoundaries") List<Long> splitBoundaries) {
+        //指定某个Bundle进行分裂
+
+        //校验参数格式以及是否存在对应的namespace
         validateNamespaceName(property, cluster, namespace);
+
+        //如果没有指定分裂算法则给一个默认的
         if (StringUtils.isEmpty(splitAlgorithmName)) {
             splitAlgorithmName = NamespaceBundleSplitAlgorithm.RANGE_EQUALLY_DIVIDE_NAME;
         }
+
+        //异步进行分裂操作
         internalSplitNamespaceBundleAsync(bundleRange,
                 authoritative, unload, splitAlgorithmName, splitBoundaries)
                 .thenAccept(__ -> {
@@ -954,6 +964,7 @@ public class Namespaces extends NamespacesBase {
             @PathParam("bundle") String bundle,
             @QueryParam("topics") List<String> topics,
             @Suspended AsyncResponse asyncResponse) {
+        //获取某个Bundle的哈希位置
         validateNamespaceName(property, cluster, namespace);
         internalGetTopicHashPositionsAsync(bundle, topics)
                 .thenAccept(asyncResponse::resume)
@@ -974,6 +985,7 @@ public class Namespaces extends NamespacesBase {
     public void setPublishRate(@Suspended AsyncResponse asyncResponse,
                                @PathParam("property") String property, @PathParam("cluster") String cluster,
                                @PathParam("namespace") String namespace, PublishRate publishRate) {
+        //获取某个命名空间下写入速率
         validateNamespaceName(property, cluster, namespace);
         internalSetPublishRateAsync(publishRate)
                 .thenAccept(__ -> asyncResponse.resume(Response.noContent().build()))

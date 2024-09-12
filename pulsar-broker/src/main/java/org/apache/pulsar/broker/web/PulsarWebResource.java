@@ -638,6 +638,7 @@ public abstract class PulsarWebResource {
             boolean authoritative, boolean readOnly) {
         NamespaceBundle nsBundle;
         try {
+            //校验Bundle的范围是否有效
             nsBundle = validateNamespaceBundleRange(fqnn, bundles, bundleRange);
         } catch (WebApplicationException wae) {
             return CompletableFuture.failedFuture(wae);
@@ -719,6 +720,7 @@ public abstract class PulsarWebResource {
                         throw new RestException(Status.PRECONDITION_FAILED,
                                 "Failed to find ownership for ServiceUnit:" + bundle.toString());
                     }
+                    //判断当前Broker节点是否负责这个bundle的管理
                     return nsService.isServiceUnitOwnedAsync(bundle)
                             .thenAccept(owned -> {
                                 if (!owned) {

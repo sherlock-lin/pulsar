@@ -194,6 +194,7 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
 
             case FLOW:
                 checkArgument(cmd.hasFlow());
+                //处理消费者发起的读取请求
                 handleFlow(cmd.getFlow());
                 break;
 
@@ -254,6 +255,7 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
                 break;
 
             case PRODUCER_SUCCESS:
+                //写入消息被Broker处理后会忘生产者客户端通过TCP发送一条PRODUCER_SUCCESS类型的消息也就是这里，跟踪进去看看处理逻辑
                 checkArgument(cmd.hasProducerSuccess());
                 handleProducerSuccess(cmd.getProducerSuccess());
                 break;

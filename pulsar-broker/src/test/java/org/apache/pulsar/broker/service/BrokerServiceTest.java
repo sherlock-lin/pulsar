@@ -977,13 +977,13 @@ public class BrokerServiceTest extends BrokerTestBase {
 
     /**
      * Verifies: client side throttling.
-     *
+     *  验证客户端侧Lookup时是否做限额
      * @throws Exception
      */
     @Test
     public void testLookupThrottlingForClientByClient() throws Exception {
         final String topicName = "persistent://prop/ns-abc/newTopic";
-
+        //通过服务名解析出真实的网络socket地址
         PulsarServiceNameResolver resolver = new PulsarServiceNameResolver();
         resolver.updateServiceUrl(pulsar.getBrokerServiceUrl());
         ClientConfigurationData conf = new ClientConfigurationData();

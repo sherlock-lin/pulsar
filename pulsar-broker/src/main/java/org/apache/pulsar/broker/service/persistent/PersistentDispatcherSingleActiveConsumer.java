@@ -151,6 +151,7 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
 
     @Override
     public void readEntriesComplete(final List<Entry> entries, Object obj) {
+        //作为任务放到线程池去执行
         executor.execute(() -> internalReadEntriesComplete(entries, obj));
     }
 
@@ -218,6 +219,7 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
             EntryBatchIndexesAcks batchIndexesAcks = EntryBatchIndexesAcks.get(entries.size());
             filterEntriesForConsumer(entries, batchSizes, sendMessageInfo, batchIndexesAcks, cursor, false,
                     currentConsumer);
+            //分派数据到消费者
             dispatchEntriesToConsumer(currentConsumer, entries, batchSizes, batchIndexesAcks, sendMessageInfo, epoch);
         }
     }
@@ -225,6 +227,7 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
     protected void dispatchEntriesToConsumer(Consumer currentConsumer, List<Entry> entries,
                                              EntryBatchSizes batchSizes, EntryBatchIndexesAcks batchIndexesAcks,
                                              SendMessageInfo sendMessageInfo, long epoch) {
+        //将查到的消息通过TCP写到消费者端
         currentConsumer
             .sendMessages(entries, batchSizes, batchIndexesAcks, sendMessageInfo.getTotalMessages(),
                     sendMessageInfo.getTotalBytes(), sendMessageInfo.getTotalChunkedMessages(),
@@ -247,6 +250,7 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
 
     @Override
     public void consumerFlow(Consumer consumer, int additionalNumberOfMessages) {
+        //作为一个任务交给线程池处理
         executor.execute(() -> internalConsumerFlow(consumer));
     }
 
@@ -270,6 +274,7 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Trigger new read after receiving flow control message", name, consumer);
             }
+            //进行消息的读取
             readMoreEntries(consumer);
         }
     }
@@ -370,6 +375,7 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
                 } else {
                     ReadEntriesCtx readEntriesCtx =
                             ReadEntriesCtx.create(consumer, consumer.getConsumerEpoch());
+                    //通过游标进行数据的读取
                     cursor.asyncReadEntriesOrWait(messagesToRead,
                             bytesToRead, this, readEntriesCtx, topic.getMaxReadPosition());
                 }

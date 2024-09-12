@@ -29,12 +29,15 @@ import org.apache.pulsar.common.api.proto.CommandSubscribe.SubType;
 import org.apache.pulsar.common.api.proto.MessageMetadata;
 
 public interface Dispatcher {
+
+    //消费者初次跟服务端创建连接时，会在服务端创建并维护其对应的Consumer对象，并添加到Dispatcher中
     CompletableFuture<Void> addConsumer(Consumer consumer);
 
     void removeConsumer(Consumer consumer) throws BrokerServiceException;
 
     /**
      * Indicates that this consumer is now ready to receive more messages.
+     * 表示此消费者现在已准备好接收更多消息。 这个方法应该就是核心方法了
      *
      * @param consumer
      */

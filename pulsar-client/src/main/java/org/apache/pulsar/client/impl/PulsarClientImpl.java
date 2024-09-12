@@ -1068,6 +1068,7 @@ public class PulsarClientImpl implements PulsarClient {
     }
 
     public LookupService createLookup(String url) throws PulsarClientException {
+        //这里可以看到如果咱们在配置客户端的地址是http开头就会通过http方式进行Loopup，否则走二进制协议进行查询
         if (url.startsWith("http")) {
             return new HttpLookupService(conf, eventLoopGroup);
         } else {
@@ -1083,7 +1084,6 @@ public class PulsarClientImpl implements PulsarClient {
     public CompletableFuture<PartitionedTopicMetadata> getPartitionedTopicMetadata(String topic) {
 
         //查询Topic的分区信息
-
         CompletableFuture<PartitionedTopicMetadata> metadataFuture = new CompletableFuture<>();
 
         try {

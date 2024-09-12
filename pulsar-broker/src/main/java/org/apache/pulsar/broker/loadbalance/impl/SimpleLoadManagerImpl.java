@@ -78,6 +78,7 @@ import org.apache.pulsar.policies.data.loadbalancer.SystemResourceUsage.Resource
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+//可以好好解读的类
 public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification> {
 
     private static final Logger log = LoggerFactory.getLogger(SimpleLoadManagerImpl.class);
@@ -87,6 +88,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
     // average JVM heap usage for
     private long avgJvmHeapUsageMBytes = 0;
     // load report got from each broker
+    // 加载每台Broker节点的负载信息
     private Map<ResourceUnit, LoadReport> currentLoadReports;
     // load ranking for each broker from multiple perspective
     private Map<ResourceUnit, ResourceUnitRanking> resourceUnitRankings;
@@ -192,6 +194,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
 
     // Perform initializations which may be done without a PulsarService.
     public SimpleLoadManagerImpl() {
+        // 这个线程池调度的是什么
         scheduler = Executors.newSingleThreadScheduledExecutor(
                 new ExecutorProvider.ExtendedThreadFactory("pulsar-simple-load-manager"));
         this.sortedRankings.set(new TreeMap<>());
@@ -228,6 +231,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
 
     @Override
     public void initialize(final PulsarService pulsar) {
+        // 初始化的信息量一般还是很大的
         if (SystemUtils.IS_OS_LINUX) {
             brokerHostUsage = new LinuxBrokerHostUsageImpl(pulsar);
         } else {
@@ -266,6 +270,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
     @Override
     public void start() throws PulsarServerException {
         // Register the brokers in metadata store
+        // 在Zookeeper节点上注册各个Broker节点信息
         String brokerId = pulsar.getBrokerId();
         String brokerLockPath = LOADBALANCE_BROKERS_ROOT + "/" + brokerId;
 
@@ -281,6 +286,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
             brokerLock = loadReports.acquireLock(brokerLockPath, loadReport).join();
 
             // first time, populate the broker ranking
+            // 核心逻辑，查询所有Broker的负载信息并进行排序，方便之后的负载策略，例如最低负载优先
             updateRanking();
             log.info("Created broker ephemeral node on {}", brokerLockPath);
 
@@ -662,6 +668,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
             ResourceQuota defaultResourceQuota =
                     pulsar.getBrokerService().getBundlesQuotas().getDefaultResourceQuota().join();
 
+            //轮询每台Broker的负载
             for (Map.Entry<ResourceUnit, LoadReport> entry : currentLoadReports.entrySet()) {
                 ResourceUnit resourceUnit = entry.getKey();
                 LoadReport loadReport = entry.getValue();
@@ -705,6 +712,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
                     updateLoadBalancingMetrics(pulsar.getAdvertisedAddress(), finalRank, ranking);
                 }
             }
+            //
             updateBrokerToNamespaceToBundle();
             this.sortedRankings.set(newSortedRankings);
             this.resourceUnitRankings = newResourceUnitRankings;
@@ -1010,6 +1018,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
                     }
                 }
                 updateRealtimeResourceQuota();
+                //核心方法
                 doLoadRanking();
             }
         } catch (Exception e) {
@@ -1267,6 +1276,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
     }
 
     // Update the brokerToNamespaceToBundleRange map with the current preallocated and assigned bundle data.
+    // 更新每个Broker所负责的Namespace的bundle范围
     private synchronized void updateBrokerToNamespaceToBundle() {
         resourceUnitRankings.forEach((resourceUnit, ranking) -> {
             final String broker = resourceUnit.getResourceId();

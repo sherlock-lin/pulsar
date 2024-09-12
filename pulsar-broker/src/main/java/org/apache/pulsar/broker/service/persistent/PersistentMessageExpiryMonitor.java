@@ -82,10 +82,12 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
 
     @Override
     public boolean expireMessages(int messageTTLInSeconds) {
+        //这个为什么可以保证消息过期检测不会短时间内重复执行
         if (expirationCheckInProgressUpdater.compareAndSet(this, FALSE, TRUE)) {
             log.info("[{}][{}] Starting message expiry check, ttl= {} seconds", topicName, subName,
                     messageTTLInSeconds);
             // First filter the entire Ledger reached TTL based on the Ledger closing time to avoid client clock skew
+            // 这里进去进行过期检查
             checkExpiryByLedgerClosureTime(cursor, messageTTLInSeconds);
             // Some part of entries in active Ledger may have reached TTL, so we need to continue searching.
             cursor.asyncFindNewestMatching(ManagedCursor.FindPositionConstraint.SearchActiveEntries, entry -> {
@@ -110,16 +112,20 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
     }
 
     private void checkExpiryByLedgerClosureTime(ManagedCursor cursor, int messageTTLInSeconds) {
+        //这里为什么又做了小于0的判断，而外层只判断了等于0，可否用统一的参数校验工具进行校验
         if (messageTTLInSeconds <= 0) {
             return;
         }
         if (cursor instanceof ManagedCursorImpl managedCursor) {
             ManagedLedgerImpl managedLedger = (ManagedLedgerImpl) managedCursor.getManagedLedger();
+            //获得游标当前标记的可删除位置
             Position deletedPosition = managedCursor.getMarkDeletedPosition();
+            //获取当前未被成功消费的积压日志信息，按Ledger进行排序
             SortedMap<Long, MLDataFormats.ManagedLedgerInfo.LedgerInfo> ledgerInfoSortedMap =
                     managedLedger.getLedgersInfo().subMap(deletedPosition.getLedgerId(), true,
                             managedLedger.getLedgersInfo().lastKey(), true);
             MLDataFormats.ManagedLedgerInfo.LedgerInfo info = null;
+            // 查询最接近现在的第一个未过期Ledger，那么其上一个Ledger一定是过期的并且其之前的都是过期的
             for (MLDataFormats.ManagedLedgerInfo.LedgerInfo ledgerInfo : ledgerInfoSortedMap.values()) {
                 if (!ledgerInfo.hasTimestamp() || !MessageImpl.isEntryExpired(messageTTLInSeconds,
                         ledgerInfo.getTimestamp())) {
@@ -127,11 +133,14 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
                 }
                 info = ledgerInfo;
             }
+            //如果info不为空说明一定存在已经处于过期的Ledger也就是过期的消息集合体
             if (info != null && info.getLedgerId() > -1) {
+                //获取具体过期的位置
                 PositionImpl position = PositionImpl.get(info.getLedgerId(), info.getEntries() - 1);
                 if (((PositionImpl) managedLedger.getLastConfirmedEntry()).compareTo(position) < 0) {
                     findEntryComplete(managedLedger.getLastConfirmedEntry(), null);
                 } else {
+                    //这里进去检查过期位置
                     findEntryComplete(position, null);
                 }
             }
@@ -215,6 +224,7 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
         if (position != null) {
             log.info("[{}][{}] Expiring all messages until position {}", topicName, subName, position);
             Position prevMarkDeletePos = cursor.getMarkDeletedPosition();
+            //通过游标标记应该被删除的数据位置，仅仅是标记而已
             cursor.asyncMarkDelete(position, cursor.getProperties(), markDeleteCallback,
                     cursor.getNumberOfEntriesInBacklog(false));
             if (!Objects.equals(cursor.getMarkDeletedPosition(), prevMarkDeletePos) && subscription != null) {

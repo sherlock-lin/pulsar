@@ -108,6 +108,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Channel handler for the Pulsar client.
+ * 负责管理客户端跟服务端的通信(网络通道处理)
  * <p>
  * Please see {@link org.apache.pulsar.common.protocol.PulsarDecoder} javadoc for important details about handle* method
  * parameter instance lifecycle.
@@ -115,6 +116,7 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings("unchecked")
 public class ClientCnx extends PulsarHandler {
 
+    //鉴权对象
     protected final Authentication authentication;
     protected State state;
 
@@ -146,6 +148,8 @@ public class ClientCnx extends PulsarHandler {
                     .expectedItems(16)
                     .concurrencyLevel(1)
                     .build();
+
+    //监听Topic列表
     @Getter(AccessLevel.PACKAGE)
     private final ConcurrentLongHashMap<TopicListWatcher> topicListWatchers =
             ConcurrentLongHashMap.<TopicListWatcher>newBuilder()
@@ -580,6 +584,7 @@ public class ClientCnx extends PulsarHandler {
             return;
         }
 
+        //生产者会在队列维护每条未被ack的写入请求消息，在Broker ack时会从这个队列中移除并获取回调处理逻辑
         CompletableFuture<ProducerResponse> requestFuture =
                 (CompletableFuture<ProducerResponse>) pendingRequests.remove(requestId);
         if (requestFuture != null) {
