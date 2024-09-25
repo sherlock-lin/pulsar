@@ -872,7 +872,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
             //
             // The load manager service and its service unit state channel need to be initialized first
             // (namespace service depends on load manager)
-            //开启负载均衡服务
+            //开启负载均衡服务(每台Broker机器都要开启吗？)
             this.startLoadManagementService();
 
             // Initialize namespace service, after service url assigned. Should init zk and refresh self owner info.
