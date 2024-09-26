@@ -43,6 +43,7 @@ public class AggregatedNamespaceStats {
     public ManagedLedgerStats managedLedgerStats = new ManagedLedgerStats();
     public long msgBacklog;
     public long msgDelayed;
+    public long msgInReplay;
 
     public long ongoingTxnCount;
     public long abortedTxnCount;
@@ -50,6 +51,9 @@ public class AggregatedNamespaceStats {
 
     long backlogQuotaLimit;
     long backlogQuotaLimitTime;
+
+    public long sizeBasedBacklogQuotaExceededEvictionCount;
+    public long timeBasedBacklogQuotaExceededEvictionCount;
 
     public Map<String, AggregatedReplicationStats> replicationStats = new HashMap<>();
 
@@ -68,6 +72,7 @@ public class AggregatedNamespaceStats {
 
     Map<String, TopicMetricBean> bucketDelayedIndexStats = new HashMap<>();
 
+    @SuppressWarnings("DuplicatedCode")
     void updateStats(TopicStats stats) {
         topicsCount++;
 
@@ -105,6 +110,9 @@ public class AggregatedNamespaceStats {
         backlogQuotaLimit = Math.max(backlogQuotaLimit, stats.backlogQuotaLimit);
         backlogQuotaLimitTime = Math.max(backlogQuotaLimitTime, stats.backlogQuotaLimitTime);
 
+        sizeBasedBacklogQuotaExceededEvictionCount += stats.sizeBasedBacklogQuotaExceededEvictionCount;
+        timeBasedBacklogQuotaExceededEvictionCount += stats.timeBasedBacklogQuotaExceededEvictionCount;
+
         managedLedgerStats.storageWriteRate += stats.managedLedgerStats.storageWriteRate;
         managedLedgerStats.storageReadRate += stats.managedLedgerStats.storageReadRate;
         managedLedgerStats.storageReadCacheMissesRate += stats.managedLedgerStats.storageReadCacheMissesRate;
@@ -126,6 +134,7 @@ public class AggregatedNamespaceStats {
             replStats.replicationBacklog += as.replicationBacklog;
             replStats.msgRateExpired += as.msgRateExpired;
             replStats.connectedCount += as.connectedCount;
+            replStats.disconnectedCount += as.disconnectedCount;
             replStats.replicationDelayInSeconds += as.replicationDelayInSeconds;
         });
 
@@ -133,10 +142,12 @@ public class AggregatedNamespaceStats {
             AggregatedSubscriptionStats subsStats =
                     subscriptionStats.computeIfAbsent(n, k -> new AggregatedSubscriptionStats());
             msgDelayed += as.msgDelayed;
+            msgInReplay += as.msgInReplay;
             subsStats.blockedSubscriptionOnUnackedMsgs = as.blockedSubscriptionOnUnackedMsgs;
             subsStats.msgBacklog += as.msgBacklog;
             subsStats.msgBacklogNoDelayed += as.msgBacklogNoDelayed;
             subsStats.msgDelayed += as.msgDelayed;
+            subsStats.msgInReplay += as.msgInReplay;
             subsStats.msgRateRedeliver += as.msgRateRedeliver;
             subsStats.unackedMessages += as.unackedMessages;
             subsStats.filterProcessedMsgCount += as.filterProcessedMsgCount;
@@ -172,6 +183,7 @@ public class AggregatedNamespaceStats {
         compactionLatencyBuckets.addAll(stats.compactionLatencyBuckets);
     }
 
+    @SuppressWarnings("DuplicatedCode")
     public void reset() {
         managedLedgerStats.reset();
         topicsCount = 0;
@@ -191,6 +203,7 @@ public class AggregatedNamespaceStats {
 
         msgBacklog = 0;
         msgDelayed = 0;
+        msgInReplay = 0;
         ongoingTxnCount = 0;
         abortedTxnCount = 0;
         committedTxnCount = 0;
@@ -200,6 +213,9 @@ public class AggregatedNamespaceStats {
 
         replicationStats.clear();
         subscriptionStats.clear();
+
+        sizeBasedBacklogQuotaExceededEvictionCount = 0;
+        timeBasedBacklogQuotaExceededEvictionCount = 0;
 
         compactionRemovedEventCount = 0;
         compactionSucceedCount = 0;

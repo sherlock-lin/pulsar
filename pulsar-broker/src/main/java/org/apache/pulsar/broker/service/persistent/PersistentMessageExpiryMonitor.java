@@ -28,13 +28,12 @@ import javax.annotation.Nullable;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.FindEntryCallback;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.MarkDeleteCallback;
 import org.apache.bookkeeper.mledger.ManagedCursor;
+import org.apache.bookkeeper.mledger.ManagedLedger;
 import org.apache.bookkeeper.mledger.ManagedLedgerException;
 import org.apache.bookkeeper.mledger.ManagedLedgerException.LedgerNotExistException;
 import org.apache.bookkeeper.mledger.ManagedLedgerException.NonRecoverableLedgerException;
 import org.apache.bookkeeper.mledger.Position;
-import org.apache.bookkeeper.mledger.impl.ManagedCursorImpl;
-import org.apache.bookkeeper.mledger.impl.ManagedLedgerImpl;
-import org.apache.bookkeeper.mledger.impl.PositionImpl;
+import org.apache.bookkeeper.mledger.PositionFactory;
 import org.apache.bookkeeper.mledger.proto.MLDataFormats;
 import org.apache.pulsar.broker.service.MessageExpirer;
 import org.apache.pulsar.client.impl.MessageImpl;
@@ -82,12 +81,10 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
 
     @Override
     public boolean expireMessages(int messageTTLInSeconds) {
-        //这个为什么可以保证消息过期检测不会短时间内重复执行
         if (expirationCheckInProgressUpdater.compareAndSet(this, FALSE, TRUE)) {
             log.info("[{}][{}] Starting message expiry check, ttl= {} seconds", topicName, subName,
                     messageTTLInSeconds);
             // First filter the entire Ledger reached TTL based on the Ledger closing time to avoid client clock skew
-            // 这里进去进行过期检查
             checkExpiryByLedgerClosureTime(cursor, messageTTLInSeconds);
             // Some part of entries in active Ledger may have reached TTL, so we need to continue searching.
             cursor.asyncFindNewestMatching(ManagedCursor.FindPositionConstraint.SearchActiveEntries, entry -> {
@@ -112,37 +109,28 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
     }
 
     private void checkExpiryByLedgerClosureTime(ManagedCursor cursor, int messageTTLInSeconds) {
-        //这里为什么又做了小于0的判断，而外层只判断了等于0，可否用统一的参数校验工具进行校验
         if (messageTTLInSeconds <= 0) {
             return;
         }
-        if (cursor instanceof ManagedCursorImpl managedCursor) {
-            ManagedLedgerImpl managedLedger = (ManagedLedgerImpl) managedCursor.getManagedLedger();
-            //获得游标当前标记的可删除位置
-            Position deletedPosition = managedCursor.getMarkDeletedPosition();
-            //获取当前未被成功消费的积压日志信息，按Ledger进行排序
-            SortedMap<Long, MLDataFormats.ManagedLedgerInfo.LedgerInfo> ledgerInfoSortedMap =
-                    managedLedger.getLedgersInfo().subMap(deletedPosition.getLedgerId(), true,
-                            managedLedger.getLedgersInfo().lastKey(), true);
-            MLDataFormats.ManagedLedgerInfo.LedgerInfo info = null;
-            // 查询最接近现在的第一个未过期Ledger，那么其上一个Ledger一定是过期的并且其之前的都是过期的
-            for (MLDataFormats.ManagedLedgerInfo.LedgerInfo ledgerInfo : ledgerInfoSortedMap.values()) {
-                if (!ledgerInfo.hasTimestamp() || !MessageImpl.isEntryExpired(messageTTLInSeconds,
-                        ledgerInfo.getTimestamp())) {
-                    break;
-                }
-                info = ledgerInfo;
+        ManagedLedger managedLedger = cursor.getManagedLedger();
+        Position deletedPosition = cursor.getMarkDeletedPosition();
+        SortedMap<Long, MLDataFormats.ManagedLedgerInfo.LedgerInfo> ledgerInfoSortedMap =
+                managedLedger.getLedgersInfo().subMap(deletedPosition.getLedgerId(), true,
+                        managedLedger.getLedgersInfo().lastKey(), true);
+        MLDataFormats.ManagedLedgerInfo.LedgerInfo info = null;
+        for (MLDataFormats.ManagedLedgerInfo.LedgerInfo ledgerInfo : ledgerInfoSortedMap.values()) {
+            if (!ledgerInfo.hasTimestamp() || ledgerInfo.getTimestamp() == 0L
+                    || !MessageImpl.isEntryExpired(messageTTLInSeconds, ledgerInfo.getTimestamp())) {
+                break;
             }
-            //如果info不为空说明一定存在已经处于过期的Ledger也就是过期的消息集合体
-            if (info != null && info.getLedgerId() > -1) {
-                //获取具体过期的位置
-                PositionImpl position = PositionImpl.get(info.getLedgerId(), info.getEntries() - 1);
-                if (((PositionImpl) managedLedger.getLastConfirmedEntry()).compareTo(position) < 0) {
-                    findEntryComplete(managedLedger.getLastConfirmedEntry(), null);
-                } else {
-                    //这里进去检查过期位置
-                    findEntryComplete(position, null);
-                }
+            info = ledgerInfo;
+        }
+        if (info != null && info.getLedgerId() > -1) {
+            Position position = PositionFactory.create(info.getLedgerId(), info.getEntries() - 1);
+            if (managedLedger.getLastConfirmedEntry().compareTo(position) < 0) {
+                findEntryComplete(managedLedger.getLastConfirmedEntry(), null);
+            } else {
+                findEntryComplete(position, null);
             }
         }
     }
@@ -150,8 +138,8 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
     @Override
     public boolean expireMessages(Position messagePosition) {
         // If it's beyond last position of this topic, do nothing.
-        PositionImpl topicLastPosition = (PositionImpl) this.topic.getLastPosition();
-        if (topicLastPosition.compareTo((PositionImpl) messagePosition) < 0) {
+        Position topicLastPosition = this.topic.getLastPosition();
+        if (topicLastPosition.compareTo(messagePosition) < 0) {
             if (log.isDebugEnabled()) {
                 log.debug("[{}][{}] Ignore expire-message scheduled task, given position {} is beyond "
                                 + "current topic's last position {}", topicName, subName, messagePosition,
@@ -166,7 +154,7 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
             cursor.asyncFindNewestMatching(ManagedCursor.FindPositionConstraint.SearchActiveEntries, entry -> {
                 try {
                     // If given position larger than entry position.
-                    return ((PositionImpl) entry.getPosition()).compareTo((PositionImpl) messagePosition) <= 0;
+                    return entry.getPosition().compareTo(messagePosition) <= 0;
                 } finally {
                     entry.release();
                 }
@@ -224,7 +212,6 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
         if (position != null) {
             log.info("[{}][{}] Expiring all messages until position {}", topicName, subName, position);
             Position prevMarkDeletePos = cursor.getMarkDeletedPosition();
-            //通过游标标记应该被删除的数据位置，仅仅是标记而已
             cursor.asyncMarkDelete(position, cursor.getProperties(), markDeleteCallback,
                     cursor.getNumberOfEntriesInBacklog(false));
             if (!Objects.equals(cursor.getMarkDeletedPosition(), prevMarkDeletePos) && subscription != null) {
@@ -250,18 +237,19 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback, Messag
                     exception.getMessage());
             if (exception instanceof LedgerNotExistException) {
                 long failedLedgerId = failedReadPosition.get().getLedgerId();
-                ManagedLedgerImpl ledger = ((ManagedLedgerImpl) cursor.getManagedLedger());
+                ManagedLedger ledger = cursor.getManagedLedger();
                 Position lastPositionInLedger = ledger.getOptionalLedgerInfo(failedLedgerId)
-                        .map(ledgerInfo -> PositionImpl.get(failedLedgerId, ledgerInfo.getEntries() - 1))
+                        .map(ledgerInfo -> PositionFactory.create(failedLedgerId, ledgerInfo.getEntries() - 1))
                         .orElseGet(() -> {
-                            Long nextExistingLedger = ledger.getNextValidLedger(failedReadPosition.get().getLedgerId());
+                            Long nextExistingLedger =
+                                ledger.getLedgersInfo().ceilingKey(failedReadPosition.get().getLedgerId() + 1);
                             if (nextExistingLedger == null) {
                                 log.info("[{}] [{}] Couldn't find next next valid ledger for expiry monitor when find "
                                                 + "entry failed {}", ledger.getName(), ledger.getName(),
                                         failedReadPosition);
-                                return (PositionImpl) failedReadPosition.get();
+                                return failedReadPosition.get();
                             } else {
-                                return PositionImpl.get(nextExistingLedger, -1);
+                                return PositionFactory.create(nextExistingLedger, -1);
                             }
                         });
                 log.info("[{}][{}] ledger not existed, will complete the last position of the non-existed"

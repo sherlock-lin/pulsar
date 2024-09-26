@@ -73,7 +73,6 @@ import org.slf4j.LoggerFactory;
 
 /**
  * A service component contains everything to run a worker except rest server.
- * Function服务的入口类是 PulsarWorkerService
  */
 @Slf4j
 @Getter
@@ -109,6 +108,7 @@ public class PulsarWorkerService implements WorkerService {
     private PulsarAdmin brokerAdmin;
     private PulsarAdmin functionAdmin;
     private MetricsGenerator metricsGenerator;
+    private PulsarWorkerOpenTelemetry openTelemetry;
     @VisibleForTesting
     private URI dlogUri;
     private LeaderService leaderService;
@@ -119,7 +119,8 @@ public class PulsarWorkerService implements WorkerService {
     private Sinks<PulsarWorkerService> sinks;
     private Sources<PulsarWorkerService> sources;
     private Workers<PulsarWorkerService> workers;
-
+    @Getter
+    private PackageUrlValidator packageUrlValidator;
     private final PulsarClientCreator clientCreator;
     private StateStoreProvider stateStoreProvider;
 
@@ -189,6 +190,7 @@ public class PulsarWorkerService implements WorkerService {
         this.statsUpdater = Executors
             .newSingleThreadScheduledExecutor(new DefaultThreadFactory("worker-stats-updater"));
         this.metricsGenerator = new MetricsGenerator(this.statsUpdater, workerConfig);
+        this.openTelemetry = new PulsarWorkerOpenTelemetry(workerConfig);
         this.workerConfig = workerConfig;
         this.dlogUri = dlogUri;
         this.workerStatsManager = new WorkerStatsManager(workerConfig, runAsStandalone);
@@ -197,6 +199,7 @@ public class PulsarWorkerService implements WorkerService {
         this.sinks = new SinksImpl(() -> PulsarWorkerService.this);
         this.sources = new SourcesImpl(() -> PulsarWorkerService.this);
         this.workers = new WorkerImpl(() -> PulsarWorkerService.this);
+        this.packageUrlValidator = new PackageUrlValidator(workerConfig);
     }
 
     @Override
@@ -205,7 +208,6 @@ public class PulsarWorkerService implements WorkerService {
         init(workerConfig, dlogUri, true);
     }
 
-    //创建一个BookKeeper DistributedLog，这个服务主要用来存储Function、Connector的包
     private static URI initializeStandaloneWorkerService(PulsarClientCreator clientCreator,
                                                          WorkerConfig workerConfig) throws Exception {
         // initializing pulsar functions namespace
@@ -224,7 +226,7 @@ public class PulsarWorkerService implements WorkerService {
                 log.warn("Retry to connect to Pulsar service at {}", workerConfig.getPulsarWebServiceUrl());
                 if (retries >= maxRetries) {
                     log.error("Failed to connect to Pulsar service at {} after {} attempts",
-                            workerConfig.getPulsarFunctionsNamespace(), maxRetries);
+                            workerConfig.getPulsarFunctionsNamespace(), maxRetries, e);
                     throw e;
                 }
                 retries++;
@@ -409,7 +411,6 @@ public class PulsarWorkerService implements WorkerService {
             if (dlogUri != null) {
                 DistributedLogConfiguration dlogConf = WorkerUtils.getDlogConf(workerConfig);
                 try {
-                    //创建一个BookKeeper DistributedLog，这个服务主要用来存储Function、Connector的包
                     this.dlogNamespace = NamespaceBuilder.newBuilder()
                             .conf(dlogConf)
                             .clientId("function-worker-" + workerConfig.getWorkerId())
@@ -422,7 +423,6 @@ public class PulsarWorkerService implements WorkerService {
             }
 
             // create the state storage provider for accessing function state
-            // 根据Function配置判断是否要创建StateStoreProvider
             if (workerConfig.getStateStorageServiceUrl() != null) {
                 this.stateStoreProvider =
                         (StateStoreProvider) Class.forName(workerConfig.getStateStorageProviderImplementation())
@@ -442,7 +442,6 @@ public class PulsarWorkerService implements WorkerService {
             this.functionAdmin = clientCreator.newPulsarAdmin(functionWebServiceUrl, workerConfig);
             this.client = clientCreator.newPulsarClient(workerConfig.getPulsarServiceUrl(), workerConfig);
 
-            //创建系统Topic：FunctionMetadataTopic、FunctionAssignmentTopic、ClusterCoordinationTopic
             tryCreateNonPartitionedTopic(workerConfig.getFunctionAssignmentTopic());
             tryCreateNonPartitionedTopic(workerConfig.getClusterCoordinationTopic());
             tryCreateNonPartitionedTopic(workerConfig.getFunctionMetadataTopic());
@@ -489,7 +488,6 @@ public class PulsarWorkerService implements WorkerService {
 
             // Start worker early in the worker service init process so that functions don't get re-assigned because
             // initialize operations of FunctionRuntimeManager and FunctionMetadataManger might take a while
-            // 创建LeaderService，因为LeaderService需要把选举状态通知给MetadataService，因此要等Manager初始化后才初始化
             this.leaderService = new LeaderService(this,
               client,
               functionAssignmentTailer,
@@ -529,9 +527,6 @@ public class PulsarWorkerService implements WorkerService {
 
             // start function metadata manager
             log.info("/** Starting Metadata Manager **/");
-            //所有的REST API最终都会调用FunctionMetaDataManager的接口，比如创建Function、删除Function、获取Function列表等
-            //FunctionMetaDataManager初始化时会通过Reader读取FunctionMetaDataTopic中所有的数据到内存，因此建议打开 `UseCompactedMetadataTopic`
-            // 配置避免恢复时消费很多消息
             functionMetaDataManager.start();
 
             // Starting cluster services
@@ -577,9 +572,6 @@ public class PulsarWorkerService implements WorkerService {
             }
 
             log.info("/** Starting Cluster Service Coordinator **/");
-            //创建ClusterServiceCoordinator，这是一个包装过的调度线程池。服务启动时会往里面添加membership-monitor和rebalance-periodic-check两个任务，
-            // 前者通过调用MembershipManager来执行一些清理任务，比如移除已经不存在的Function、移除已经执行完成的Function、收集执行失败的Function、
-            // 触发未被调度的Function重新调度。第二个任务是定时重平衡集群中的任务
             clusterServiceCoordinator.start();
 
             // indicate function worker service is done initializing
@@ -670,6 +662,10 @@ public class PulsarWorkerService implements WorkerService {
 
         if (null != stateStoreProvider) {
             stateStoreProvider.close();
+        }
+
+        if (null != openTelemetry) {
+            openTelemetry.close();
         }
 
         if (null != functionsManager) {

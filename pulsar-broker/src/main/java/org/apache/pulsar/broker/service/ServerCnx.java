@@ -26,12 +26,13 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.apache.pulsar.broker.admin.impl.PersistentTopicsBase.unsafeGetPartitionedTopicMetadataAsync;
 import static org.apache.pulsar.broker.lookup.TopicLookupBase.lookupTopicAsync;
 import static org.apache.pulsar.broker.service.persistent.PersistentTopic.getMigratedClusterUrl;
+import static org.apache.pulsar.broker.service.schema.BookkeeperSchemaStorage.ignoreUnrecoverableBKException;
 import static org.apache.pulsar.common.api.proto.ProtocolVersion.v5;
 import static org.apache.pulsar.common.protocol.Commands.DEFAULT_CONSUMER_EPOCH;
-import static org.apache.pulsar.common.protocol.Commands.newCloseConsumer;
 import static org.apache.pulsar.common.protocol.Commands.newLookupErrorResponse;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
+import com.google.re2j.Pattern;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -46,6 +47,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,18 +60,19 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import javax.naming.AuthenticationException;
 import javax.net.ssl.SSLSession;
 import org.apache.bookkeeper.mledger.AsyncCallbacks;
 import org.apache.bookkeeper.mledger.Entry;
+import org.apache.bookkeeper.mledger.ManagedLedger;
 import org.apache.bookkeeper.mledger.ManagedLedgerException;
 import org.apache.bookkeeper.mledger.Position;
-import org.apache.bookkeeper.mledger.impl.ManagedLedgerImpl;
-import org.apache.bookkeeper.mledger.impl.PositionImpl;
+import org.apache.bookkeeper.mledger.PositionFactory;
+import org.apache.bookkeeper.mledger.impl.AckSetStateUtil;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.apache.pulsar.broker.PulsarServerException;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.TransactionMetadataStoreService;
@@ -81,6 +84,8 @@ import org.apache.pulsar.broker.intercept.BrokerInterceptor;
 import org.apache.pulsar.broker.limiter.ConnectionController;
 import org.apache.pulsar.broker.loadbalance.extensions.ExtensibleLoadManagerImpl;
 import org.apache.pulsar.broker.loadbalance.extensions.data.BrokerLookupData;
+import org.apache.pulsar.broker.namespace.LookupOptions;
+import org.apache.pulsar.broker.namespace.NamespaceService;
 import org.apache.pulsar.broker.service.BrokerServiceException.ConsumerBusyException;
 import org.apache.pulsar.broker.service.BrokerServiceException.ServerMetadataException;
 import org.apache.pulsar.broker.service.BrokerServiceException.ServiceUnitNotReadyException;
@@ -146,6 +151,7 @@ import org.apache.pulsar.common.api.proto.TxnAction;
 import org.apache.pulsar.common.compression.CompressionCodec;
 import org.apache.pulsar.common.compression.CompressionCodecProvider;
 import org.apache.pulsar.common.intercept.InterceptException;
+import org.apache.pulsar.common.lookup.data.LookupData;
 import org.apache.pulsar.common.naming.Metadata;
 import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.naming.SystemTopicNames;
@@ -155,6 +161,7 @@ import org.apache.pulsar.common.policies.data.BacklogQuota.BacklogQuotaType;
 import org.apache.pulsar.common.policies.data.ClusterPolicies.ClusterUrl;
 import org.apache.pulsar.common.policies.data.NamespaceOperation;
 import org.apache.pulsar.common.policies.data.TopicOperation;
+import org.apache.pulsar.common.policies.data.TopicType;
 import org.apache.pulsar.common.policies.data.stats.ConsumerStatsImpl;
 import org.apache.pulsar.common.protocol.ByteBufPair;
 import org.apache.pulsar.common.protocol.CommandUtils;
@@ -170,6 +177,7 @@ import org.apache.pulsar.common.util.collections.ConcurrentLongHashMap;
 import org.apache.pulsar.common.util.netty.NettyChannelUtil;
 import org.apache.pulsar.common.util.netty.NettyFutureUtil;
 import org.apache.pulsar.functions.utils.Exceptions;
+import org.apache.pulsar.metadata.api.MetadataStoreException;
 import org.apache.pulsar.transaction.coordinator.TransactionCoordinatorID;
 import org.apache.pulsar.transaction.coordinator.exceptions.CoordinatorException;
 import org.apache.pulsar.transaction.coordinator.impl.MLTransactionMetadataStore;
@@ -291,8 +299,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         Start, Connected, Failed, Connecting
     }
 
-    private final ServerCnxThrottleTracker throttleTracker = new ServerCnxThrottleTracker(this);
-
+    private final ServerCnxThrottleTracker throttleTracker;
 
     public ServerCnx(PulsarService pulsar) {
         this(pulsar, null);
@@ -341,6 +348,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         this.topicListService = new TopicListService(pulsar, this,
                 enableSubscriptionPatternEvaluation, maxSubscriptionPatternLength);
         this.brokerInterceptor = this.service != null ? this.service.getInterceptor() : null;
+        this.throttleTracker = new ServerCnxThrottleTracker(this);
     }
 
     @Override
@@ -363,6 +371,10 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         this.commandSender = new PulsarCommandSenderImpl(brokerInterceptor, this);
         this.service.getPulsarStats().recordConnectionCreate();
         cnxsPerThread.get().add(this);
+        service.getPulsar().runWhenReadyForIncomingRequests(() -> {
+            // enable auto read after PulsarService is ready to accept incoming requests
+            ctx.channel().config().setAutoRead(true);
+        });
     }
 
     @Override
@@ -419,7 +431,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
         // complete possible pending connection check future
         if (connectionCheckInProgress != null && !connectionCheckInProgress.isDone()) {
-            connectionCheckInProgress.complete(false);
+            connectionCheckInProgress.complete(Optional.of(false));
         }
     }
 
@@ -533,9 +545,19 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             isTopicOperationAllowed(topicName, TopicOperation.LOOKUP, authenticationData, originalAuthData).thenApply(
                     isAuthorized -> {
                 if (isAuthorized) {
+                    final Map<String, String> properties;
+                    if (lookup.getPropertiesCount() > 0) {
+                        properties = new HashMap<>();
+                        for (int i = 0; i < lookup.getPropertiesCount(); i++) {
+                            final var keyValue = lookup.getPropertyAt(i);
+                            properties.put(keyValue.getKey(), keyValue.getValue());
+                        }
+                    } else {
+                        properties = Collections.emptyMap();
+                    }
                     lookupTopicAsync(getBrokerService().pulsar(), topicName, authoritative,
                             getPrincipal(), getAuthenticationData(),
-                            requestId, advertisedListenerName).handle((lookupResponse, ex) -> {
+                            requestId, advertisedListenerName, properties).handle((lookupResponse, ex) -> {
                                 if (ex == null) {
                                     writeAndFlush(lookupResponse);
                                 } else {
@@ -606,35 +628,70 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             isTopicOperationAllowed(topicName, TopicOperation.LOOKUP, authenticationData, originalAuthData).thenApply(
                     isAuthorized -> {
                 if (isAuthorized) {
-                    unsafeGetPartitionedTopicMetadataAsync(getBrokerService().pulsar(), topicName)
-                        .handle((metadata, ex) -> {
-                                if (ex == null) {
-                                    int partitions = metadata.partitions;
-                                    commandSender.sendPartitionMetadataResponse(partitions, requestId);
-                                } else {
-                                    if (ex instanceof PulsarClientException) {
-                                        log.warn("Failed to authorize {} at [{}] on topic {} : {}", getRole(),
-                                                remoteAddress, topicName, ex.getMessage());
-                                        commandSender.sendPartitionMetadataResponse(ServerError.AuthorizationError,
-                                                ex.getMessage(), requestId);
-                                    } else {
-                                        log.warn("Failed to get Partitioned Metadata [{}] {}: {}", remoteAddress,
-                                                topicName, ex.getMessage(), ex);
-                                        ServerError error = ServerError.ServiceNotReady;
-                                        if (ex instanceof RestException restException){
-                                            int responseCode = restException.getResponse().getStatus();
-                                            if (responseCode == NOT_FOUND.getStatusCode()){
-                                                error = ServerError.TopicNotFound;
-                                            } else if (responseCode < INTERNAL_SERVER_ERROR.getStatusCode()){
-                                                error = ServerError.MetadataError;
-                                            }
-                                        }
-                                        commandSender.sendPartitionMetadataResponse(error, ex.getMessage(), requestId);
-                                    }
-                                }
+                    // Get if exists, respond not found error if not exists.
+                    getBrokerService().isAllowAutoTopicCreationAsync(topicName).thenAccept(brokerAllowAutoCreate -> {
+                        boolean autoCreateIfNotExist = partitionMetadata.isMetadataAutoCreationEnabled()
+                                && brokerAllowAutoCreate;
+                        if (!autoCreateIfNotExist) {
+                            NamespaceService namespaceService = getBrokerService().getPulsar().getNamespaceService();
+                            namespaceService.checkTopicExists(topicName).thenAccept(topicExistsInfo -> {
                                 lookupSemaphore.release();
+                                if (!topicExistsInfo.isExists()) {
+                                    writeAndFlush(Commands.newPartitionMetadataResponse(
+                                            ServerError.TopicNotFound, "", requestId));
+                                } else if (topicExistsInfo.getTopicType().equals(TopicType.PARTITIONED)) {
+                                    commandSender.sendPartitionMetadataResponse(topicExistsInfo.getPartitions(),
+                                            requestId);
+                                } else {
+                                    commandSender.sendPartitionMetadataResponse(0, requestId);
+                                }
+                                // release resources.
+                                topicExistsInfo.recycle();
+                            }).exceptionally(ex -> {
+                                lookupSemaphore.release();
+                                log.error("{} {} Failed to get partition metadata", topicName,
+                                        ServerCnx.this.toString(), ex);
+                                writeAndFlush(
+                                        Commands.newPartitionMetadataResponse(ServerError.MetadataError,
+                                                "Failed to get partition metadata",
+                                                requestId));
                                 return null;
                             });
+                        } else {
+                            // Get if exists, create a new one if not exists.
+                            unsafeGetPartitionedTopicMetadataAsync(getBrokerService().pulsar(), topicName)
+                                .whenComplete((metadata, ex) -> {
+                                    lookupSemaphore.release();
+                                    if (ex == null) {
+                                        int partitions = metadata.partitions;
+                                        commandSender.sendPartitionMetadataResponse(partitions, requestId);
+                                    } else {
+                                        if (ex instanceof PulsarClientException) {
+                                            log.warn("Failed to authorize {} at [{}] on topic {} : {}", getRole(),
+                                                    remoteAddress, topicName, ex.getMessage());
+                                            commandSender.sendPartitionMetadataResponse(ServerError.AuthorizationError,
+                                                    ex.getMessage(), requestId);
+                                        } else {
+                                            log.warn("Failed to get Partitioned Metadata [{}] {}: {}", remoteAddress,
+                                                    topicName, ex.getMessage(), ex);
+                                            ServerError error = ServerError.ServiceNotReady;
+                                            if (ex instanceof MetadataStoreException) {
+                                                error = ServerError.MetadataError;
+                                            } else if (ex instanceof RestException restException){
+                                                int responseCode = restException.getResponse().getStatus();
+                                                if (responseCode == NOT_FOUND.getStatusCode()){
+                                                    error = ServerError.TopicNotFound;
+                                                } else if (responseCode < INTERNAL_SERVER_ERROR.getStatusCode()){
+                                                    error = ServerError.MetadataError;
+                                                }
+                                            }
+                                            commandSender.sendPartitionMetadataResponse(error, ex.getMessage(),
+                                                    requestId);
+                                        }
+                                    }
+                                });
+                        }
+                    });
                 } else {
                     final String msg = "Client is not authorized to Get Partition Metadata";
                     log.warn("[{}] {} with role {} on topic {}", remoteAddress, msg, getPrincipal(), topicName);
@@ -1137,7 +1194,6 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     @Override
     protected void handleSubscribe(final CommandSubscribe subscribe) {
-        //处理客户端发起的订阅请求
         checkArgument(state == State.Connected);
         final long requestId = subscribe.getRequestId();
         final long consumerId = subscribe.getConsumerId();
@@ -1182,7 +1238,6 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                     schema == null ? "absent" : "present");
         }
 
-        //校验是否有消费的权限
         CompletableFuture<Boolean> isAuthorizedFuture = isTopicOperationAllowed(
                 topicName,
                 subscriptionName,
@@ -1202,8 +1257,8 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             remoteAddress, getPrincipal());
                 }
 
-                log.info("[{}] Subscribing on topic {} / {}. consumerId: {}", this.ctx().channel().toString(),
-                        topicName, subscriptionName, consumerId);
+                log.info("[{}] Subscribing on topic {} / {}. consumerId: {}, role: {}", this.toString(), topicName,
+                        subscriptionName, consumerId, getPrincipal());
                 try {
                     Metadata.validateMetadata(metadata,
                             service.getPulsar().getConfiguration().getMaxConsumerMetadataSize());
@@ -1226,10 +1281,20 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                         commandSender.sendErrorResponse(requestId, ServerError.ServiceNotReady,
                                 "Consumer is already present on the connection");
                     } else if (existingConsumerFuture.isCompletedExceptionally()){
+                        log.warn("[{}][{}][{}] A failed consumer with id is already present on the connection,"
+                                + " consumerId={}", remoteAddress, topicName, subscriptionName, consumerId);
                         ServerError error = getErrorCodeWithErrorLog(existingConsumerFuture, true,
-                                String.format("Consumer subscribe failure. remoteAddress: %s, subscription: %s",
-                                        remoteAddress, subscriptionName));
-                        consumers.remove(consumerId, existingConsumerFuture);
+                                String.format("A failed consumer with id is already present on the connection."
+                                                + " consumerId: %s, remoteAddress: %s, subscription: %s",
+                                        consumerId, remoteAddress, subscriptionName));
+                        /**
+                         * This future may was failed due to the client closed a in-progress subscribing.
+                         * See {@link #handleCloseConsumer(CommandCloseConsumer)}
+                         * Do not remove the failed future at current line, it will be removed after the progress of
+                         * the previous subscribing is done.
+                         * Before the previous subscribing is done, the new subscribe request will always fail.
+                         * This mechanism is in order to prevent more complex logic to handle the race conditions.
+                         */
                         commandSender.sendErrorResponse(requestId, error,
                                 "Consumer that failed is already present on the connection");
                     } else {
@@ -1253,7 +1318,16 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                                 "Topic " + topicName + " does not exist"));
                             }
                             final Topic topic = optTopic.get();
-                            //异步获取是否允许创建订阅的配置
+                            // Check max consumer limitation to avoid unnecessary ops wasting resources. For example:
+                            // the new consumer reached max producer limitation, but pulsar did schema check first,
+                            // it would waste CPU.
+                            if (((AbstractTopic) topic).isConsumersExceededOnTopic()) {
+                                log.warn("[{}] Attempting to add consumer to topic which reached max"
+                                        + " consumers limit", topic);
+                                Throwable t =
+                                        new ConsumerBusyException("Topic reached max consumers limit");
+                                return FutureUtil.failedFuture(t);
+                            }
                             return service.isAllowAutoSubscriptionCreationAsync(topicName)
                                     .thenCompose(isAllowedAutoSubscriptionCreation -> {
                                         boolean rejectSubscriptionIfDoesNotExist = isDurable
@@ -1268,7 +1342,6 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                                                     "Subscription does not exist"));
                                         }
 
-                                        //创建订阅对象的操作
                                         SubscriptionOption option = SubscriptionOption.builder().cnx(ServerCnx.this)
                                                 .subscriptionName(subscriptionName)
                                                 .consumerId(consumerId).subType(subType)
@@ -1285,7 +1358,8 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                                 .schemaType(schema == null ? null : schema.getType())
                                                 .build();
                                         if (schema != null && schema.getType() != SchemaType.AUTO_CONSUME) {
-                                            return topic.addSchemaIfIdleOrCheckCompatible(schema)
+                                            return ignoreUnrecoverableBKException
+                                                    (topic.addSchemaIfIdleOrCheckCompatible(schema))
                                                     .thenCompose(v -> topic.subscribe(option));
                                         } else {
                                             return topic.subscribe(option);
@@ -1368,7 +1442,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             // Send error back to client, only if not completed already.
                             if (consumerFuture.completeExceptionally(exception)) {
                                 commandSender.sendErrorResponse(requestId,
-                                        BrokerServiceException.getClientErrorCode(exception),
+                                        BrokerServiceException.getClientErrorCode(exception.getCause()),
                                         exception.getCause().getMessage());
                             }
                             consumers.remove(consumerId, consumerFuture);
@@ -1433,7 +1507,6 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             return;
         }
 
-        //通过配置决定是否开启
         CompletableFuture<Boolean> isAuthorizedFuture = isTopicOperationAllowed(
                 topicName, TopicOperation.PRODUCE, authenticationData, originalAuthData
         );
@@ -1493,6 +1566,15 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             }
 
             service.getOrCreateTopic(topicName.toString()).thenCompose((Topic topic) -> {
+                // Check max producer limitation to avoid unnecessary ops wasting resources. For example: the new
+                // producer reached max producer limitation, but pulsar did schema check first, it would waste CPU
+                if (((AbstractTopic) topic).isProducersExceeded(producerName)) {
+                    log.warn("[{}] Attempting to add producer to topic which reached max producers limit", topic);
+                    String errorMsg = "Topic '" + topicName.toString() + "' reached max producers limit";
+                    Throwable t = new BrokerServiceException.ProducerBusyException(errorMsg);
+                    return CompletableFuture.failedFuture(t);
+                }
+
                 // Before creating producer, check if backlog quota exceeded
                 // on topic for size based limit and time based limit
                 CompletableFuture<Void> backlogQuotaCheckFuture = CompletableFuture.allOf(
@@ -1534,67 +1616,53 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                     });
 
                     schemaVersionFuture.thenAccept(schemaVersion -> {
-                        topic.checkIfTransactionBufferRecoverCompletely(isTxnEnabled).thenAccept(future -> {
-                            CompletionStage<Subscription> createInitSubFuture;
-                            if (!Strings.isNullOrEmpty(initialSubscriptionName)
-                                    && topic.isPersistent()
-                                    && !topic.getSubscriptions().containsKey(initialSubscriptionName)) {
-                                createInitSubFuture = service.isAllowAutoSubscriptionCreationAsync(topicName)
-                                        .thenCompose(isAllowAutoSubscriptionCreation -> {
-                                            if (!isAllowAutoSubscriptionCreation) {
-                                                return CompletableFuture.failedFuture(
-                                                        new BrokerServiceException.NotAllowedException(
-                                                        "Could not create the initial subscription due to"
-                                                            + " the auto subscription creation is not allowed."));
-                                            }
-                                            return topic.createSubscription(initialSubscriptionName,
-                                                    InitialPosition.Earliest, false, null);
-                                        });
-                            } else {
-                                createInitSubFuture = CompletableFuture.completedFuture(null);
-                            }
-
-                            createInitSubFuture.whenComplete((sub, ex) -> {
-                                if (ex != null) {
-                                    final Throwable rc = FutureUtil.unwrapCompletionException(ex);
-                                    if (rc instanceof BrokerServiceException.NotAllowedException) {
-                                        log.warn("[{}] {} initialSubscriptionName: {}, topic: {}",
-                                                remoteAddress, rc.getMessage(), initialSubscriptionName, topicName);
-                                        if (producerFuture.completeExceptionally(rc)) {
-                                            commandSender.sendErrorResponse(requestId,
-                                                    ServerError.NotAllowedError, rc.getMessage());
+                        CompletionStage<Subscription> createInitSubFuture;
+                        if (!Strings.isNullOrEmpty(initialSubscriptionName)
+                                && topic.isPersistent()
+                                && !topic.getSubscriptions().containsKey(initialSubscriptionName)) {
+                            createInitSubFuture = service.isAllowAutoSubscriptionCreationAsync(topicName)
+                                    .thenCompose(isAllowAutoSubscriptionCreation -> {
+                                        if (!isAllowAutoSubscriptionCreation) {
+                                            return CompletableFuture.failedFuture(
+                                                    new BrokerServiceException.NotAllowedException(
+                                                            "Could not create the initial subscription due to the "
+                                                                    + "auto subscription creation is not allowed."));
                                         }
-                                        producers.remove(producerId, producerFuture);
-                                        return;
-                                    }
-                                    String msg =
-                                            "Failed to create the initial subscription: " + ex.getCause().getMessage();
+                                        return topic.createSubscription(initialSubscriptionName,
+                                                InitialPosition.Earliest, false, null);
+                                    });
+                        } else {
+                            createInitSubFuture = CompletableFuture.completedFuture(null);
+                        }
+
+                        createInitSubFuture.whenComplete((sub, ex) -> {
+                            if (ex != null) {
+                                final Throwable rc = FutureUtil.unwrapCompletionException(ex);
+                                if (rc instanceof BrokerServiceException.NotAllowedException) {
                                     log.warn("[{}] {} initialSubscriptionName: {}, topic: {}",
-                                            remoteAddress, msg, initialSubscriptionName, topicName);
-                                    if (producerFuture.completeExceptionally(ex)) {
+                                            remoteAddress, rc.getMessage(), initialSubscriptionName, topicName);
+                                    if (producerFuture.completeExceptionally(rc)) {
                                         commandSender.sendErrorResponse(requestId,
-                                                BrokerServiceException.getClientErrorCode(ex), msg);
+                                                ServerError.NotAllowedError, rc.getMessage());
                                     }
                                     producers.remove(producerId, producerFuture);
                                     return;
                                 }
+                                String msg =
+                                        "Failed to create the initial subscription: " + ex.getCause().getMessage();
+                                log.warn("[{}] {} initialSubscriptionName: {}, topic: {}",
+                                        remoteAddress, msg, initialSubscriptionName, topicName);
+                                if (producerFuture.completeExceptionally(ex)) {
+                                    commandSender.sendErrorResponse(requestId,
+                                            BrokerServiceException.getClientErrorCode(ex), msg);
+                                }
+                                producers.remove(producerId, producerFuture);
+                                return;
+                            }
 
-                                //创建服务端的生产者对象
-                                buildProducerAndAddTopic(topic, producerId, producerName, requestId, isEncrypted,
+                            buildProducerAndAddTopic(topic, producerId, producerName, requestId, isEncrypted,
                                     metadata, schemaVersion, epoch, userProvidedProducerName, topicName,
                                     producerAccessMode, topicEpoch, supportsPartialProducer, producerFuture);
-                            });
-                        }).exceptionally(exception -> {
-                            Throwable cause = exception.getCause();
-                            log.error("producerId {}, requestId {} : TransactionBuffer recover failed",
-                                    producerId, requestId, exception);
-                            if (producerFuture.completeExceptionally(exception)) {
-                                commandSender.sendErrorResponse(requestId,
-                                        ServiceUnitNotReadyException.getClientErrorCode(cause),
-                                        cause.getMessage());
-                            }
-                            producers.remove(producerId, producerFuture);
-                            return null;
                         });
                     });
                 });
@@ -1680,7 +1748,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         topic.addProducer(producer, producerQueuedFuture).thenAccept(newTopicEpoch -> {
             if (isActive()) {
                 if (producerFuture.complete(producer)) {
-                    log.info("[{}] Created new producer: {}", remoteAddress, producer);
+                    log.info("[{}] Created new producer: {}, role: {}", remoteAddress, producer, getPrincipal());
                     commandSender.sendProducerSuccessResponse(requestId, producerName,
                             producer.getLastSequenceId(), producer.getSchemaVersion(),
                             newTopicEpoch, true /* producer is ready now */);
@@ -1771,7 +1839,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
     @Override
     protected void handleSend(CommandSend send, ByteBuf headersAndPayload) {
         checkArgument(state == State.Connected);
-        // 生产者启动时会连接Broker，Broker端会创建与之对应的Producer对象来维护在producers这个Map中
+
         CompletableFuture<Producer> producerFuture = producers.get(send.getProducerId());
 
         if (producerFuture == null || !producerFuture.isDone() || producerFuture.isCompletedExceptionally()) {
@@ -1794,22 +1862,24 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             printSendCommandDebug(send, headersAndPayload);
         }
 
-        PulsarService pulsar = getBrokerService().pulsar();
-        // if the topic is transferring, we ignore send msg.
+        // New messages are silently ignored during topic transfer. Note that the transferring flag is only set when the
+        // Extensible Load Manager is enabled.
         if (producer.getTopic().isTransferring()) {
-            long ignoredMsgCount = ExtensibleLoadManagerImpl.get(pulsar)
-                    .getIgnoredSendMsgCounter().addAndGet(send.getNumMessages());
+            var pulsar = getBrokerService().pulsar();
+            var ignoredMsgCount = send.getNumMessages();
+            var ignoredSendMsgTotalCount = ExtensibleLoadManagerImpl.get(pulsar).getIgnoredSendMsgCount().
+                    addAndGet(ignoredMsgCount);
             if (log.isDebugEnabled()) {
-                log.debug("Ignored send msg from:{}:{} to fenced topic:{} while transferring."
-                                + " Ignored message count:{}.",
-                        remoteAddress, send.getProducerId(), producer.getTopic().getName(), ignoredMsgCount);
+                log.debug("Ignoring {} messages from:{}:{} to fenced topic:{} while transferring."
+                                + " Total ignored message count: {}.",
+                        ignoredMsgCount, remoteAddress, send.getProducerId(), producer.getTopic().getName(),
+                        ignoredSendMsgTotalCount);
             }
             return;
         }
 
         if (producer.isNonPersistentTopic()) {
             // avoid processing non-persist message if reached max concurrent-message limit
-            // 校验非持久化的等待消息数是否超过最大值默认1000
             if (nonPersistentPendingMessages > maxNonPersistentPendingMessages) {
                 final long producerId = send.getProducerId();
                 final long sequenceId = send.getSequenceId();
@@ -1836,17 +1906,13 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
         // This position is only used for shadow replicator
         Position position = send.hasMessageId()
-                ? PositionImpl.get(send.getMessageId().getLedgerId(), send.getMessageId().getEntryId()) : null;
+                ? PositionFactory.create(send.getMessageId().getLedgerId(), send.getMessageId().getEntryId()) : null;
 
         // Persist the message
-        // 客户端会批量发送，一批里每个消息SequenceId都不一样(一批也可能只有一条)，有大有小
-        // 一批中最大那个是highestSequenceId，最小的是lowestSequenceId，在这里最小的也是send.getSequenceId()
         if (send.hasHighestSequenceId() && send.getSequenceId() <= send.getHighestSequenceId()) {
-            //批量发送
             producer.publishMessage(send.getProducerId(), send.getSequenceId(), send.getHighestSequenceId(),
                     headersAndPayload, send.getNumMessages(), send.isIsChunk(), send.isMarker(), position);
         } else {
-            //单条发送
             producer.publishMessage(send.getProducerId(), send.getSequenceId(), headersAndPayload,
                     send.getNumMessages(), send.isIsChunk(), send.isMarker(), position);
         }
@@ -1880,11 +1946,16 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {
             Consumer consumer = consumerFuture.getNow(null);
             Subscription subscription = consumer.getSubscription();
+            // Message acks are silently ignored during topic transfer. Note that the transferring flag is only set when
+            // the Extensible Load Manager is enabled.
             if (subscription.getTopic().isTransferring()) {
-                // Message acks are silently ignored during topic transfer.
+                var pulsar = getBrokerService().getPulsar();
+                var ignoredAckCount = ack.getMessageIdsCount();
+                var ignoredAckTotalCount = ExtensibleLoadManagerImpl.get(pulsar).getIgnoredAckCount().
+                        addAndGet(ignoredAckCount);
                 if (log.isDebugEnabled()) {
-                    log.debug("[{}] [{}] Ignoring message acknowledgment during topic transfer, ack count: {}",
-                            subscription, consumerId, ack.getMessageIdsCount());
+                    log.debug("[{}] [{}] Ignoring {} message acks during topic transfer. Total ignored ack count: {}",
+                            subscription, consumerId, ignoredAckCount, ignoredAckTotalCount);
                 }
                 return;
             }
@@ -1912,7 +1983,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             if (log.isDebugEnabled()) {
                 log.debug("Consumer future is not complete(not complete or error), but received command ack. so discard"
                                 + " this command. consumerId: {}, cnx: {}, messageIdCount: {}", ack.getConsumerId(),
-                        this.ctx().channel().toString(), ack.getMessageIdsCount());
+                        this.toString(), ack.getMessageIdsCount());
             }
         }
     }
@@ -1925,13 +1996,11 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                     flow.getMessagePermits());
         }
 
-        //从当前Broker维护的Consumer列表中获取客户端对应服务端的Consumer对象
         CompletableFuture<Consumer> consumerFuture = consumers.get(flow.getConsumerId());
 
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {
             Consumer consumer = consumerFuture.getNow(null);
             if (consumer != null) {
-                //传入客户端配置的拉取条数，最大默认不会超过1000
                 consumer.flowPermits(flow.getMessagePermits());
             } else {
                 log.info("[{}] Couldn't find consumer {}", remoteAddress, flow.getConsumerId());
@@ -2006,7 +2075,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 }
             }
 
-            Position position = new PositionImpl(msgIdData.getLedgerId(),
+            Position position = AckSetStateUtil.createPositionWithAckSet(msgIdData.getLedgerId(),
                     msgIdData.getEntryId(), ackSet);
 
 
@@ -2167,29 +2236,31 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             long requestId = getLastMessageId.getRequestId();
 
             Topic topic = consumer.getSubscription().getTopic();
-            topic.checkIfTransactionBufferRecoverCompletely(true).thenRun(() -> {
-                Position lastPosition = ((PersistentTopic) topic).getMaxReadPosition();
-                int partitionIndex = TopicName.getPartitionIndex(topic.getName());
+            topic.checkIfTransactionBufferRecoverCompletely()
+                 .thenCompose(__ -> topic.getLastDispatchablePosition())
+                 .thenApply(lastPosition -> {
+                     int partitionIndex = TopicName.getPartitionIndex(topic.getName());
 
-                Position markDeletePosition = null;
-                if (consumer.getSubscription() instanceof PersistentSubscription) {
-                    markDeletePosition = ((PersistentSubscription) consumer.getSubscription()).getCursor()
-                            .getMarkDeletedPosition();
-                }
+                     Position markDeletePosition = null;
+                     if (consumer.getSubscription() instanceof PersistentSubscription) {
+                         markDeletePosition = ((PersistentSubscription) consumer.getSubscription()).getCursor()
+                                 .getMarkDeletedPosition();
+                     }
 
-                getLargestBatchIndexWhenPossible(
-                        topic,
-                        (PositionImpl) lastPosition,
-                        (PositionImpl) markDeletePosition,
-                        partitionIndex,
-                        requestId,
-                        consumer.getSubscription().getName(),
-                        consumer.readCompacted());
-            }).exceptionally(e -> {
-                writeAndFlush(Commands.newError(getLastMessageId.getRequestId(),
-                        ServerError.UnknownError, "Failed to recover Transaction Buffer."));
-                return null;
-            });
+                     getLargestBatchIndexWhenPossible(
+                             topic,
+                             lastPosition,
+                             markDeletePosition,
+                             partitionIndex,
+                             requestId,
+                             consumer.getSubscription().getName(),
+                             consumer.readCompacted());
+                    return null;
+                 }).exceptionally(e -> {
+                     writeAndFlush(Commands.newError(getLastMessageId.getRequestId(),
+                             ServerError.UnknownError, "Failed to recover Transaction Buffer."));
+                     return null;
+                 });
         } else {
             writeAndFlush(Commands.newError(getLastMessageId.getRequestId(),
                     ServerError.MetadataError, "Consumer not found"));
@@ -2198,15 +2269,15 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     private void getLargestBatchIndexWhenPossible(
             Topic topic,
-            PositionImpl lastPosition,
-            PositionImpl markDeletePosition,
+            Position lastPosition,
+            Position markDeletePosition,
             int partitionIndex,
             long requestId,
             String subscriptionName,
             boolean readCompacted) {
 
         PersistentTopic persistentTopic = (PersistentTopic) topic;
-        ManagedLedgerImpl ml = (ManagedLedgerImpl) persistentTopic.getManagedLedger();
+        ManagedLedger ml = persistentTopic.getManagedLedger();
 
         // If it's not pointing to a valid entry, respond messageId of the current position.
         // If the compaction cursor reach the end of the topic, respond messageId from compacted ledger
@@ -2221,7 +2292,8 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 return;
             }
 
-            if (lastPosition.getEntryId() == -1 || !ml.ledgerExists(lastPosition.getLedgerId())) {
+
+            if (lastPosition.getEntryId() == -1 || !ml.getLedgersInfo().containsKey(lastPosition.getLedgerId())) {
                 // there is no entry in the original topic
                 if (compactionHorizon != null) {
                     // if readCompacted is true, we need to read the last entry from compacted topic
@@ -2236,7 +2308,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 return;
             }
 
-            if (compactionHorizon != null && lastPosition.compareTo((PositionImpl) compactionHorizon) <= 0) {
+            if (compactionHorizon != null && lastPosition.compareTo(compactionHorizon) <= 0) {
                 handleLastMessageIdFromCompactionService(persistentTopic, requestId, partitionIndex,
                         markDeletePosition);
                 return;
@@ -2257,8 +2329,8 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
                 @Override
                 public String toString() {
-                    return String.format("ServerCnx [{}] get largest batch index when possible",
-                            ServerCnx.this.ctx.channel());
+                    return String.format("ServerCnx [%s] get largest batch index when possible",
+                            ServerCnx.this.toString());
                 }
             }, null);
 
@@ -2296,8 +2368,9 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             });
         });
     }
+
     private void handleLastMessageIdFromCompactionService(PersistentTopic persistentTopic, long requestId,
-                                                          int partitionIndex, PositionImpl markDeletePosition) {
+                                                          int partitionIndex, Position markDeletePosition) {
         persistentTopic.getTopicCompactionService().readLastCompactedEntry().thenAccept(entry -> {
             if (entry != null) {
                 try {
@@ -2408,11 +2481,11 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         if (lookupSemaphore.tryAcquire()) {
             isNamespaceOperationAllowed(namespaceName, NamespaceOperation.GET_TOPICS).thenApply(isAuthorized -> {
                 if (isAuthorized) {
-                    getBrokerService().pulsar().getNamespaceService().getListOfTopics(namespaceName, mode)
+                    getBrokerService().pulsar().getNamespaceService().getListOfUserTopics(namespaceName, mode)
                         .thenAccept(topics -> {
                             boolean filterTopics = false;
                             // filter system topic
-                            List<String> filteredTopics = TopicList.filterSystemTopic(topics);
+                            List<String> filteredTopics = topics;
 
                             if (enableSubscriptionPatternEvaluation && topicsPattern.isPresent()) {
                                 if (topicsPattern.get().length() <= maxSubscriptionPatternLength) {
@@ -2499,9 +2572,10 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             schemaVersion = schemaService.versionFromBytes(commandGetSchema.getSchemaVersion());
         }
 
+        final String topic = commandGetSchema.getTopic();
         String schemaName;
         try {
-            schemaName = TopicName.get(commandGetSchema.getTopic()).getSchemaName();
+            schemaName = TopicName.get(topic).getSchemaName();
         } catch (Throwable t) {
             commandSender.sendGetSchemaErrorResponse(requestId, ServerError.InvalidTopicName, t.getMessage());
             return;
@@ -2510,7 +2584,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         schemaService.getSchema(schemaName, schemaVersion).thenAccept(schemaAndMetadata -> {
             if (schemaAndMetadata == null) {
                 commandSender.sendGetSchemaErrorResponse(requestId, ServerError.TopicNotFound,
-                        String.format("Topic not found or no-schema %s", commandGetSchema.getTopic()));
+                        String.format("Topic not found or no-schema %s", topic));
             } else {
                 commandSender.sendGetSchemaResponse(requestId,
                         SchemaInfoUtil.newSchemaInfo(schemaName, schemaAndMetadata.schema), schemaAndMetadata.version);
@@ -3116,15 +3190,28 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         closeProducer(producer.getProducerId(), producer.getEpoch(), assignedBrokerLookupData);
     }
 
+    private LookupData getLookupData(BrokerLookupData lookupData) {
+        LookupOptions.LookupOptionsBuilder builder = LookupOptions.builder();
+        if (StringUtils.isNotBlank((listenerName))) {
+            builder.advertisedListenerName(listenerName);
+        }
+        try {
+            return lookupData.toLookupResult(builder.build()).getLookupData();
+        } catch (PulsarServerException e) {
+            log.error("Failed to get lookup data", e);
+            throw new RuntimeException(e);
+        }
+    }
+
     private void closeProducer(long producerId, long epoch, Optional<BrokerLookupData> assignedBrokerLookupData) {
         if (getRemoteEndpointProtocolVersion() >= v5.getValue()) {
-            if (assignedBrokerLookupData.isPresent()) {
-                writeAndFlush(Commands.newCloseProducer(producerId, -1L,
-                        assignedBrokerLookupData.get().pulsarServiceUrl(),
-                        assignedBrokerLookupData.get().pulsarServiceUrlTls()));
-            } else {
-                writeAndFlush(Commands.newCloseProducer(producerId, -1L));
-            }
+            assignedBrokerLookupData.ifPresentOrElse(lookup -> {
+                        LookupData lookupData = getLookupData(lookup);
+                        writeAndFlush(Commands.newCloseProducer(producerId, -1L,
+                                lookupData.getBrokerUrl(),
+                                lookupData.getBrokerUrlTls()));
+                    },
+                    () -> writeAndFlush(Commands.newCloseProducer(producerId, -1L)));
 
             // The client does not necessarily know that the producer is closed, but the connection is still
             // active, and there could be messages in flight already. We want to ignore these messages for a time
@@ -3150,9 +3237,13 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     private void closeConsumer(long consumerId, Optional<BrokerLookupData> assignedBrokerLookupData) {
         if (getRemoteEndpointProtocolVersion() >= v5.getValue()) {
-            writeAndFlush(newCloseConsumer(consumerId, -1L,
-                    assignedBrokerLookupData.map(BrokerLookupData::pulsarServiceUrl).orElse(null),
-                    assignedBrokerLookupData.map(BrokerLookupData::pulsarServiceUrlTls).orElse(null)));
+            assignedBrokerLookupData.ifPresentOrElse(lookup -> {
+                        LookupData lookupData = getLookupData(lookup);
+                        writeAndFlush(Commands.newCloseConsumer(consumerId, -1L,
+                                lookupData.getBrokerUrl(),
+                                lookupData.getBrokerUrlTls()));
+                    },
+                    () -> writeAndFlush(Commands.newCloseConsumer(consumerId, -1L, null, null)));
         } else {
             close();
         }
@@ -3291,7 +3382,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 }
             } catch (Throwable t) {
                 log.warn("[{}] [{}] Failed to remove TCP no-delay property on client cnx {}", topic, producerName,
-                        ctx.channel());
+                        this.toString());
             }
         }
     }
@@ -3352,6 +3443,31 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     public SocketAddress getRemoteAddress() {
         return remoteAddress;
+    }
+
+    /**
+     * Demo: [id: 0x2561bcd1, L:/10.0.136.103:6650 ! R:/240.240.0.5:58038] [SR:/240.240.0.5:58038].
+     * L: local Address.
+     * R: remote address.
+     * SR: source remote address. It is the source address when enabled "haProxyProtocolEnabled".
+     */
+    @Override
+    public String toString() {
+        ChannelHandlerContext ctx = ctx();
+        // ctx.channel(): 96.
+        // clientSourceAddress: 5 + 46(ipv6).
+        // state: 19.
+        // Len = 166.
+        StringBuilder buf = new StringBuilder(166);
+        if (ctx == null) {
+            buf.append("[ctx: null]");
+        } else {
+            buf.append(ctx.channel().toString());
+        }
+        String clientSourceAddr = clientSourceAddress();
+        buf.append(" [SR:").append(clientSourceAddr == null ? "-" : clientSourceAddr)
+                .append(", state:").append(state).append("]");
+        return buf.toString();
     }
 
     @Override
@@ -3485,22 +3601,43 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         return clientSourceAddressAndPort;
     }
 
-    CompletableFuture<Boolean> connectionCheckInProgress;
+    CompletableFuture<Optional<Boolean>> connectionCheckInProgress;
 
     @Override
-    public CompletableFuture<Boolean> checkConnectionLiveness() {
+    public CompletableFuture<Optional<Boolean>> checkConnectionLiveness() {
+        if (!isActive()) {
+            return CompletableFuture.completedFuture(Optional.of(false));
+        }
         if (connectionLivenessCheckTimeoutMillis > 0) {
             return NettyFutureUtil.toCompletableFuture(ctx.executor().submit(() -> {
+                if (!isActive()) {
+                    return CompletableFuture.completedFuture(Optional.of(false));
+                }
                 if (connectionCheckInProgress != null) {
                     return connectionCheckInProgress;
                 } else {
-                    final CompletableFuture<Boolean> finalConnectionCheckInProgress = new CompletableFuture<>();
+                    final CompletableFuture<Optional<Boolean>> finalConnectionCheckInProgress =
+                            new CompletableFuture<>();
                     connectionCheckInProgress = finalConnectionCheckInProgress;
                     ctx.executor().schedule(() -> {
-                        if (finalConnectionCheckInProgress == connectionCheckInProgress
-                                && !finalConnectionCheckInProgress.isDone()) {
-                            log.warn("[{}] Connection check timed out. Closing connection.", remoteAddress);
+                        if (!isActive()) {
+                            finalConnectionCheckInProgress.complete(Optional.of(false));
+                            return;
+                        }
+                        if (finalConnectionCheckInProgress.isDone()) {
+                            return;
+                        }
+                        if (finalConnectionCheckInProgress == connectionCheckInProgress) {
+                            /**
+                             * {@link #connectionCheckInProgress} will be completed when
+                             * {@link #channelInactive(ChannelHandlerContext)} event occurs, so skip set it here.
+                             */
+                            log.warn("[{}] Connection check timed out. Closing connection.", this.toString());
                             ctx.close();
+                        } else {
+                            log.error("[{}] Reached unexpected code block. Completing connection check.",
+                                    this.toString());
+                            finalConnectionCheckInProgress.complete(Optional.of(true));
                         }
                     }, connectionLivenessCheckTimeoutMillis, TimeUnit.MILLISECONDS);
                     sendPing();
@@ -3509,7 +3646,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             })).thenCompose(java.util.function.Function.identity());
         } else {
             // check is disabled
-            return CompletableFuture.completedFuture((Boolean) null);
+            return CompletableFuture.completedFuture(Optional.empty());
         }
     }
 
@@ -3517,7 +3654,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
     protected void messageReceived() {
         super.messageReceived();
         if (connectionCheckInProgress != null && !connectionCheckInProgress.isDone()) {
-            connectionCheckInProgress.complete(true);
+            connectionCheckInProgress.complete(Optional.of(true));
             connectionCheckInProgress = null;
         }
     }

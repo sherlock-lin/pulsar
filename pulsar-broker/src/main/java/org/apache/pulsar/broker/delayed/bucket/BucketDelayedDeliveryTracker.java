@@ -19,7 +19,7 @@
 package org.apache.pulsar.broker.delayed.bucket;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static org.apache.bookkeeper.mledger.impl.ManagedCursorImpl.CURSOR_INTERNAL_PROPERTY_PREFIX;
+import static org.apache.bookkeeper.mledger.ManagedCursor.CURSOR_INTERNAL_PROPERTY_PREFIX;
 import static org.apache.pulsar.broker.delayed.bucket.Bucket.DELIMITER;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.HashBasedTable;
@@ -48,7 +48,8 @@ import javax.annotation.concurrent.ThreadSafe;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.mledger.ManagedCursor;
-import org.apache.bookkeeper.mledger.impl.PositionImpl;
+import org.apache.bookkeeper.mledger.Position;
+import org.apache.bookkeeper.mledger.PositionFactory;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.mutable.MutableLong;
@@ -105,40 +106,47 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
     private CompletableFuture<Void> pendingLoad = null;
 
     public BucketDelayedDeliveryTracker(PersistentDispatcherMultipleConsumers dispatcher,
-                                 Timer timer, long tickTimeMillis,
-                                 boolean isDelayedDeliveryDeliverAtTimeStrict,
-                                 BucketSnapshotStorage bucketSnapshotStorage,
-                                 long minIndexCountPerBucket, long timeStepPerBucketSnapshotSegmentInMillis,
-                                 int maxIndexesPerBucketSnapshotSegment, int maxNumBuckets) {
+                                        Timer timer, long tickTimeMillis,
+                                        boolean isDelayedDeliveryDeliverAtTimeStrict,
+                                        BucketSnapshotStorage bucketSnapshotStorage,
+                                        long minIndexCountPerBucket, long timeStepPerBucketSnapshotSegmentInMillis,
+                                        int maxIndexesPerBucketSnapshotSegment, int maxNumBuckets)
+            throws RecoverDelayedDeliveryTrackerException {
         this(dispatcher, timer, tickTimeMillis, Clock.systemUTC(), isDelayedDeliveryDeliverAtTimeStrict,
                 bucketSnapshotStorage, minIndexCountPerBucket, timeStepPerBucketSnapshotSegmentInMillis,
                 maxIndexesPerBucketSnapshotSegment, maxNumBuckets);
     }
 
     public BucketDelayedDeliveryTracker(PersistentDispatcherMultipleConsumers dispatcher,
-                                 Timer timer, long tickTimeMillis, Clock clock,
-                                 boolean isDelayedDeliveryDeliverAtTimeStrict,
-                                 BucketSnapshotStorage bucketSnapshotStorage,
-                                 long minIndexCountPerBucket, long timeStepPerBucketSnapshotSegmentInMillis,
-                                 int maxIndexesPerBucketSnapshotSegment, int maxNumBuckets) {
+                                        Timer timer, long tickTimeMillis, Clock clock,
+                                        boolean isDelayedDeliveryDeliverAtTimeStrict,
+                                        BucketSnapshotStorage bucketSnapshotStorage,
+                                        long minIndexCountPerBucket, long timeStepPerBucketSnapshotSegmentInMillis,
+                                        int maxIndexesPerBucketSnapshotSegment, int maxNumBuckets)
+            throws RecoverDelayedDeliveryTrackerException {
         super(dispatcher, timer, tickTimeMillis, clock, isDelayedDeliveryDeliverAtTimeStrict);
         this.minIndexCountPerBucket = minIndexCountPerBucket;
         this.timeStepPerBucketSnapshotSegmentInMillis = timeStepPerBucketSnapshotSegmentInMillis;
         this.maxIndexesPerBucketSnapshotSegment = maxIndexesPerBucketSnapshotSegment;
         this.maxNumBuckets = maxNumBuckets;
         this.sharedBucketPriorityQueue = new TripleLongPriorityQueue();
-        //这个结构适合做什么
         this.immutableBuckets = TreeRangeMap.create();
         this.snapshotSegmentLastIndexTable = HashBasedTable.create();
         this.lastMutableBucket =
                 new MutableBucket(dispatcher.getName(), dispatcher.getCursor(), FutureUtil.Sequencer.create(),
                         bucketSnapshotStorage);
         this.stats = new BucketDelayedMessageIndexStats();
-        this.numberDelayedMessages = recoverBucketSnapshot();
+
+        // Close the tracker if failed to recover.
+        try {
+            this.numberDelayedMessages = recoverBucketSnapshot();
+        } catch (RecoverDelayedDeliveryTrackerException e) {
+            close();
+            throw e;
+        }
     }
 
-    //从镜像进行恢复
-    private synchronized long recoverBucketSnapshot() throws RuntimeException {
+    private synchronized long recoverBucketSnapshot() throws RecoverDelayedDeliveryTrackerException {
         ManagedCursor cursor = this.lastMutableBucket.getCursor();
         Map<String, String> cursorProperties = cursor.getCursorProperties();
         if (MapUtils.isEmpty(cursorProperties)) {
@@ -183,7 +191,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            throw new RuntimeException(e);
+            throw new RecoverDelayedDeliveryTrackerException(e);
         }
 
         for (Map.Entry<Range<Long>, CompletableFuture<List<DelayedIndex>>> entry : futures.entrySet()) {
@@ -224,7 +232,6 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
         return numberDelayedMessages.getValue();
     }
 
-    //往里面放数据？
     private synchronized void putAndCleanOverlapRange(Range<Long> range, ImmutableBucket immutableBucket,
                                                       Map<Range<Long>, ImmutableBucket> toBeDeletedBucketMap) {
         RangeMap<Long, ImmutableBucket> subRangeMap = immutableBuckets.subRangeMap(range);
@@ -553,7 +560,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
     }
 
     @Override
-    public synchronized NavigableSet<PositionImpl> getScheduledMessages(int maxMessages) {
+    public synchronized NavigableSet<Position> getScheduledMessages(int maxMessages) {
         if (!checkPendingLoadDone()) {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Skip getScheduledMessages to wait for bucket snapshot load finish.",
@@ -566,7 +573,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
 
         lastMutableBucket.moveScheduledMessageToSharedQueue(cutoffTime, sharedBucketPriorityQueue);
 
-        NavigableSet<PositionImpl> positions = new TreeSet<>();
+        NavigableSet<Position> positions = new TreeSet<>();
         int n = maxMessages;
 
         while (n > 0 && !sharedBucketPriorityQueue.isEmpty()) {
@@ -650,7 +657,7 @@ public class BucketDelayedDeliveryTracker extends AbstractDelayedDeliveryTracker
                 }
             }
 
-            positions.add(new PositionImpl(ledgerId, entryId));
+            positions.add(PositionFactory.create(ledgerId, entryId));
 
             sharedBucketPriorityQueue.pop();
             removeIndexBit(ledgerId, entryId);

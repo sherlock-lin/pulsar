@@ -104,7 +104,9 @@ public class TenantsBase extends PulsarWebResource {
     @PUT
     @Path("/{tenant}")
     @ApiOperation(value = "Create a new tenant.", notes = "This operation requires Pulsar super-user privileges.")
-    @ApiResponses(value = {@ApiResponse(code = 403, message = "The requester doesn't have admin permissions"),
+    @ApiResponses(value = {
+            @ApiResponse(code = 204, message = "Operation successful"),
+            @ApiResponse(code = 403, message = "The requester doesn't have admin permissions"),
             @ApiResponse(code = 409, message = "Tenant already exists"),
             @ApiResponse(code = 412, message = "Tenant name is not valid"),
             @ApiResponse(code = 412, message = "Clusters can not be empty"),
@@ -123,6 +125,7 @@ public class TenantsBase extends PulsarWebResource {
         validateSuperUserAccessAsync()
                 .thenCompose(__ -> validatePoliciesReadOnlyAccessAsync())
                 .thenCompose(__ -> validateClustersAsync(tenantInfo))
+                .thenCompose(__ -> validateAdminRoleAsync(tenantInfo))
                 .thenCompose(__ -> tenantResources().tenantExistsAsync(tenant))
                 .thenAccept(exist -> {
                     if (exist) {
@@ -157,7 +160,9 @@ public class TenantsBase extends PulsarWebResource {
     @Path("/{tenant}")
     @ApiOperation(value = "Update the admins for a tenant.",
             notes = "This operation requires Pulsar super-user privileges.")
-    @ApiResponses(value = {@ApiResponse(code = 403, message = "The requester doesn't have admin permissions"),
+    @ApiResponses(value = {
+            @ApiResponse(code = 204, message = "Operation successful"),
+            @ApiResponse(code = 403, message = "The requester doesn't have admin permissions"),
             @ApiResponse(code = 404, message = "Tenant does not exist"),
             @ApiResponse(code = 409, message = "Tenant already exists"),
             @ApiResponse(code = 412, message = "Clusters can not be empty"),
@@ -169,6 +174,7 @@ public class TenantsBase extends PulsarWebResource {
         validateSuperUserAccessAsync()
                 .thenCompose(__ -> validatePoliciesReadOnlyAccessAsync())
                 .thenCompose(__ -> validateClustersAsync(newTenantAdmin))
+                .thenCompose(__ -> validateAdminRoleAsync(newTenantAdmin))
                 .thenCompose(__ -> tenantResources().getTenantAsync(tenant))
                 .thenCompose(tenantAdmin -> {
                     if (!tenantAdmin.isPresent()) {
@@ -193,7 +199,9 @@ public class TenantsBase extends PulsarWebResource {
     @DELETE
     @Path("/{tenant}")
     @ApiOperation(value = "Delete a tenant and all namespaces and topics under it.")
-    @ApiResponses(value = {@ApiResponse(code = 403, message = "The requester doesn't have admin permissions"),
+    @ApiResponses(value = {
+            @ApiResponse(code = 204, message = "Operation successful"),
+            @ApiResponse(code = 403, message = "The requester doesn't have admin permissions"),
             @ApiResponse(code = 404, message = "Tenant does not exist"),
             @ApiResponse(code = 405, message = "Broker doesn't allow forced deletion of tenants"),
             @ApiResponse(code = 409, message = "The tenant still has active namespaces")})
@@ -284,5 +292,19 @@ public class TenantsBase extends PulsarWebResource {
                 throw new RestException(Status.PRECONDITION_FAILED, "Clusters do not exist");
             }
         });
+    }
+
+    private CompletableFuture<Void> validateAdminRoleAsync(TenantInfoImpl info) {
+        if (info.getAdminRoles() != null && !info.getAdminRoles().isEmpty()) {
+            for (String adminRole : info.getAdminRoles()) {
+                if (!StringUtils.trim(adminRole).equals(adminRole)) {
+                    log.warn("[{}] Failed to validate due to adminRole {} contains whitespace in the beginning or end.",
+                            clientAppId(), adminRole);
+                    return FutureUtil.failedFuture(new RestException(Status.PRECONDITION_FAILED,
+                            "AdminRoles contains whitespace in the beginning or end."));
+                }
+            }
+        }
+        return CompletableFuture.completedFuture(null);
     }
 }

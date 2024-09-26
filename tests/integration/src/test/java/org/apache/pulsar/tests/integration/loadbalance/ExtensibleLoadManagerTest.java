@@ -57,6 +57,8 @@ import org.awaitility.Awaitility;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.DataProvider;
+import org.testng.annotations.Factory;
 import org.testng.annotations.Test;
 
 
@@ -78,6 +80,20 @@ public class ExtensibleLoadManagerTest extends TestRetrySupport {
     private PulsarCluster pulsarCluster = null;
     private String hosts;
     private PulsarAdmin admin;
+    protected String serviceUnitStateTableViewClassName;
+
+    @Factory(dataProvider = "serviceUnitStateTableViewClassName")
+    public ExtensibleLoadManagerTest(String serviceUnitStateTableViewClassName) {
+        this.serviceUnitStateTableViewClassName = serviceUnitStateTableViewClassName;
+    }
+
+    @DataProvider(name = "serviceUnitStateTableViewClassName")
+    public static Object[][] serviceUnitStateTableViewClassName() {
+        return new Object[][]{
+                {"org.apache.pulsar.broker.loadbalance.extensions.channel.ServiceUnitStateMetadataStoreTableViewImpl"},
+                {"org.apache.pulsar.broker.loadbalance.extensions.channel.ServiceUnitStateTableViewImpl"}
+        };
+    }
 
     @BeforeClass(alwaysRun = true)
     public void setup() throws Exception {
@@ -87,9 +103,10 @@ public class ExtensibleLoadManagerTest extends TestRetrySupport {
                 "org.apache.pulsar.broker.loadbalance.extensions.ExtensibleLoadManagerImpl");
         brokerEnvs.put("loadBalancerLoadSheddingStrategy",
                 "org.apache.pulsar.broker.loadbalance.extensions.scheduler.TransferShedder");
+        brokerEnvs.put("loadManagerServiceUnitStateTableViewClassName",
+                serviceUnitStateTableViewClassName);
         brokerEnvs.put("forceDeleteNamespaceAllowed", "true");
         brokerEnvs.put("loadBalancerDebugModeEnabled", "true");
-        brokerEnvs.put("topicLevelPoliciesEnabled", "false");
         brokerEnvs.put("PULSAR_MEM", "-Xmx512M");
         spec.brokerEnvs(brokerEnvs);
         pulsarCluster = PulsarCluster.forSpec(spec);
@@ -227,17 +244,17 @@ public class ExtensibleLoadManagerTest extends TestRetrySupport {
         long mid = bundleRanges.get(0) + (bundleRanges.get(1) - bundleRanges.get(0)) / 2;
         Awaitility.waitAtMost(10, TimeUnit.SECONDS).pollDelay(100, TimeUnit.MILLISECONDS)
                 .untilAsserted(
-                () -> {
-                    BundlesData bundlesData = admin.namespaces().getBundles(DEFAULT_NAMESPACE);
-                    assertEquals(bundlesData.getNumBundles(), numBundles + 1);
-                    String lowBundle = String.format("0x%08x", bundleRanges.get(0));
-                    String midBundle = String.format("0x%08x", mid);
-                    String highBundle = String.format("0x%08x", bundleRanges.get(1));
-                    assertTrue(bundlesData.getBoundaries().contains(lowBundle));
-                    assertTrue(bundlesData.getBoundaries().contains(midBundle));
-                    assertTrue(bundlesData.getBoundaries().contains(highBundle));
-                }
-        );
+                        () -> {
+                            BundlesData bundlesData = admin.namespaces().getBundles(DEFAULT_NAMESPACE);
+                            assertEquals(bundlesData.getNumBundles(), numBundles + 1);
+                            String lowBundle = String.format("0x%08x", bundleRanges.get(0));
+                            String midBundle = String.format("0x%08x", mid);
+                            String highBundle = String.format("0x%08x", bundleRanges.get(1));
+                            assertTrue(bundlesData.getBoundaries().contains(lowBundle));
+                            assertTrue(bundlesData.getBoundaries().contains(midBundle));
+                            assertTrue(bundlesData.getBoundaries().contains(highBundle));
+                        }
+                );
 
 
         // Test split bundle with invalid bundle range.
@@ -323,7 +340,7 @@ public class ExtensibleLoadManagerTest extends TestRetrySupport {
         assertEquals(result.size(), NUM_BROKERS);
     }
 
-    @Test(timeOut = 240 * 1000)
+    @Test(timeOut = 300 * 1000)
     public void testIsolationPolicy() throws Exception {
         final String namespaceIsolationPolicyName = "my-isolation-policy";
         final String isolationEnabledNameSpace = DEFAULT_TENANT + "/my-isolation-policy" + nsSuffix;
@@ -333,7 +350,8 @@ public class ExtensibleLoadManagerTest extends TestRetrySupport {
 
         Awaitility.await().atMost(10, TimeUnit.SECONDS).ignoreExceptions().untilAsserted(
                 () -> {
-                    List<String> activeBrokers = admin.brokers().getActiveBrokers();
+                    List<String> activeBrokers = admin.brokers().getActiveBrokersAsync()
+                            .get(5, TimeUnit.SECONDS);
                     assertEquals(activeBrokers.size(), NUM_BROKERS);
                 }
         );
@@ -372,15 +390,16 @@ public class ExtensibleLoadManagerTest extends TestRetrySupport {
             }
         }
 
-        Awaitility.await().atMost(30, TimeUnit.SECONDS).ignoreExceptions().untilAsserted(
+        Awaitility.await().atMost(60, TimeUnit.SECONDS).ignoreExceptions().untilAsserted(
                 () -> {
-                    List<String> activeBrokers = admin.brokers().getActiveBrokers();
+                    List<String> activeBrokers = admin.brokers().getActiveBrokersAsync()
+                            .get(5, TimeUnit.SECONDS);
                     assertEquals(activeBrokers.size(), 2);
                 }
         );
 
         Awaitility.await().atMost(60, TimeUnit.SECONDS).ignoreExceptions().untilAsserted(() -> {
-            String ownerBroker = admin.lookups().lookupTopic(topic);
+            String ownerBroker = admin.lookups().lookupTopicAsync(topic).get(5, TimeUnit.SECONDS);
             assertEquals(extractBrokerIndex(ownerBroker), 1);
         });
 
@@ -391,19 +410,25 @@ public class ExtensibleLoadManagerTest extends TestRetrySupport {
             }
         }
 
-        Awaitility.await().atMost(30, TimeUnit.SECONDS).ignoreExceptions().untilAsserted(
-            () -> {
-                List<String> activeBrokers = admin.brokers().getActiveBrokers();
-                assertEquals(activeBrokers.size(), 1);
-            }
+        Awaitility.await().atMost(60, TimeUnit.SECONDS).ignoreExceptions().untilAsserted(
+                () -> {
+                    List<String> activeBrokers = admin.brokers().getActiveBrokersAsync().get(5, TimeUnit.SECONDS);
+                    assertEquals(activeBrokers.size(), 1);
+                }
         );
-        try {
-            admin.lookups().lookupTopic(topic);
-            fail();
-        } catch (Exception ex) {
-            log.error("Failed to lookup topic: ", ex);
-            assertThat(ex.getMessage()).contains("Failed to select the new owner broker for bundle");
-        }
+
+        Awaitility.await().atMost(60, TimeUnit.SECONDS).ignoreExceptions().untilAsserted(
+                () -> {
+                    try {
+                        admin.lookups().lookupTopicAsync(topic).get(5, TimeUnit.SECONDS);
+                        fail();
+                    } catch (Exception ex) {
+                        log.error("Failed to lookup topic: ", ex);
+                        assertThat(ex.getMessage()).contains("Service Unavailable");
+                    }
+                }
+        );
+
     }
 
     private void createNonPartitionedTopicAndRetry(String topicName) throws Exception {

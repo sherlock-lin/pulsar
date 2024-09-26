@@ -145,7 +145,7 @@ public class FunctionsImpl extends ComponentImpl implements Functions<PulsarWork
             // validate parameters
             try {
                 if (isNotBlank(functionPkgUrl)) {
-                    componentPackageFile = getPackageFile(functionPkgUrl);
+                    componentPackageFile = getPackageFile(componentType, functionPkgUrl);
                     functionDetails = validateUpdateRequestParams(tenant, namespace, functionName,
                             functionConfig, componentPackageFile);
                 } else {
@@ -170,7 +170,7 @@ public class FunctionsImpl extends ComponentImpl implements Functions<PulsarWork
                 worker().getFunctionRuntimeManager().getRuntimeFactory().doAdmissionChecks(functionDetails);
             } catch (Exception e) {
                 log.error("{} {}/{}/{} cannot be admitted by the runtime factory",
-                        ComponentTypeUtils.toString(componentType), tenant, namespace, functionName);
+                        ComponentTypeUtils.toString(componentType), tenant, namespace, functionName, e);
                 throw new RestException(Response.Status.BAD_REQUEST, String.format("%s %s cannot be admitted:- %s",
                         ComponentTypeUtils.toString(componentType), functionName, e.getMessage()));
             }
@@ -306,6 +306,7 @@ public class FunctionsImpl extends ComponentImpl implements Functions<PulsarWork
             // validate parameters
             try {
                 componentPackageFile = getPackageFile(
+                        componentType,
                         functionPkgUrl,
                         existingComponent.getPackageLocation().getPackagePath(),
                         uploadedInputStream);
@@ -327,7 +328,7 @@ public class FunctionsImpl extends ComponentImpl implements Functions<PulsarWork
                 worker().getFunctionRuntimeManager().getRuntimeFactory().doAdmissionChecks(functionDetails);
             } catch (Exception e) {
                 log.error("Updated {} {}/{}/{} cannot be submitted to runtime factory",
-                        ComponentTypeUtils.toString(componentType), tenant, namespace, functionName);
+                        ComponentTypeUtils.toString(componentType), tenant, namespace, functionName, e);
                 throw new RestException(Response.Status.BAD_REQUEST, String.format("%s %s cannot be admitted:- %s",
                         ComponentTypeUtils.toString(componentType), functionName, e.getMessage()));
             }

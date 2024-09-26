@@ -19,24 +19,28 @@
 package org.apache.pulsar.broker.service.persistent;
 
 import com.google.common.annotations.VisibleForTesting;
-import io.netty.util.concurrent.FastThreadLocal;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NavigableSet;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
+import javax.annotation.Nullable;
 import org.apache.bookkeeper.mledger.Entry;
 import org.apache.bookkeeper.mledger.ManagedCursor;
+import org.apache.bookkeeper.mledger.ManagedLedger;
 import org.apache.bookkeeper.mledger.Position;
-import org.apache.bookkeeper.mledger.impl.ManagedLedgerImpl;
-import org.apache.bookkeeper.mledger.impl.PositionImpl;
+import org.apache.bookkeeper.mledger.PositionFactory;
+import org.apache.bookkeeper.mledger.impl.ManagedCursorImpl;
+import org.apache.commons.collections4.MapUtils;
+import org.apache.commons.lang3.mutable.MutableBoolean;
+import org.apache.commons.lang3.mutable.MutableInt;
 import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.service.BrokerServiceException;
 import org.apache.pulsar.broker.service.ConsistentHashingStickyKeyConsumerSelector;
@@ -53,6 +57,8 @@ import org.apache.pulsar.common.api.proto.CommandSubscribe.SubType;
 import org.apache.pulsar.common.api.proto.KeySharedMeta;
 import org.apache.pulsar.common.api.proto.KeySharedMode;
 import org.apache.pulsar.common.util.FutureUtil;
+import org.apache.pulsar.common.util.collections.ConcurrentOpenLongPairRangeSet;
+import org.apache.pulsar.common.util.collections.LongPairRangeSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,8 +66,9 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
 
     private final boolean allowOutOfOrderDelivery;
     private final StickyKeyConsumerSelector selector;
+    private final boolean recentlyJoinedConsumerTrackingRequired;
 
-    private boolean isDispatcherStuckOnReplays = false;
+    private boolean skipNextReplayToTriggerLookAhead = false;
     private final KeySharedMode keySharedMode;
 
     /**
@@ -69,15 +76,30 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
      * This means that, in order to preserve ordering, new consumers can only receive old
      * messages, until the mark-delete position will move past this point.
      */
-    private final LinkedHashMap<Consumer, PositionImpl> recentlyJoinedConsumers;
+    private final LinkedHashMap<Consumer, Position> recentlyJoinedConsumers;
+
+    /**
+     * The lastSentPosition and the individuallySentPositions are not thread safe.
+     */
+    @Nullable
+    private Position lastSentPosition;
+    private final LongPairRangeSet<Position> individuallySentPositions;
+    private static final LongPairRangeSet.LongPairConsumer<Position> positionRangeConverter = PositionFactory::create;
 
     PersistentStickyKeyDispatcherMultipleConsumers(PersistentTopic topic, ManagedCursor cursor,
             Subscription subscription, ServiceConfiguration conf, KeySharedMeta ksm) {
         super(topic, cursor, subscription, ksm.isAllowOutOfOrderDelivery());
 
         this.allowOutOfOrderDelivery = ksm.isAllowOutOfOrderDelivery();
-        this.recentlyJoinedConsumers = allowOutOfOrderDelivery ? null : new LinkedHashMap<>();
         this.keySharedMode = ksm.getKeySharedMode();
+        // recent joined consumer tracking is required only for AUTO_SPLIT mode when out-of-order delivery is disabled
+        this.recentlyJoinedConsumerTrackingRequired =
+                keySharedMode == KeySharedMode.AUTO_SPLIT && !allowOutOfOrderDelivery;
+        this.recentlyJoinedConsumers = recentlyJoinedConsumerTrackingRequired ? new LinkedHashMap<>() : null;
+        this.individuallySentPositions =
+                recentlyJoinedConsumerTrackingRequired
+                        ? new ConcurrentOpenLongPairRangeSet<>(4096, positionRangeConverter)
+                        : null;
         switch (this.keySharedMode) {
         case AUTO_SPLIT:
             if (conf.isSubscriptionKeySharedUseConsistentHashing()) {
@@ -122,15 +144,18 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                 })
         ).thenRun(() -> {
             synchronized (PersistentStickyKeyDispatcherMultipleConsumers.this) {
-                PositionImpl readPositionWhenJoining = (PositionImpl) cursor.getReadPosition();
-                consumer.setReadPositionWhenJoining(readPositionWhenJoining);
-                // If this was the 1st consumer, or if all the messages are already acked, then we
-                // don't need to do anything special
-                if (!allowOutOfOrderDelivery
-                        && recentlyJoinedConsumers != null
-                        && consumerList.size() > 1
-                        && cursor.getNumberOfEntriesSinceFirstNotAckedMessage() > 1) {
-                    recentlyJoinedConsumers.put(consumer, readPositionWhenJoining);
+                if (recentlyJoinedConsumerTrackingRequired) {
+                    final Position lastSentPositionWhenJoining = updateIfNeededAndGetLastSentPosition();
+                    if (lastSentPositionWhenJoining != null) {
+                        consumer.setLastSentPositionWhenJoining(lastSentPositionWhenJoining);
+                        // If this was the 1st consumer, or if all the messages are already acked, then we
+                        // don't need to do anything special
+                        if (recentlyJoinedConsumers != null
+                                && consumerList.size() > 1
+                                && cursor.getNumberOfEntriesSinceFirstNotAckedMessage() > 1) {
+                            recentlyJoinedConsumers.put(consumer, lastSentPositionWhenJoining);
+                        }
+                    }
                 }
             }
         });
@@ -146,10 +171,16 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
         // eventually causing all consumers to get stuck.
         selector.removeConsumer(consumer);
         super.removeConsumer(consumer);
-        if (recentlyJoinedConsumers != null) {
+        if (recentlyJoinedConsumerTrackingRequired) {
             recentlyJoinedConsumers.remove(consumer);
             if (consumerList.size() == 1) {
                 recentlyJoinedConsumers.clear();
+            } else if (consumerList.isEmpty()) {
+                // The subscription removes consumers if rewind or reset cursor operations are called.
+                // The dispatcher must clear lastSentPosition and individuallySentPositions because
+                // these operations trigger re-sending messages.
+                lastSentPosition = null;
+                individuallySentPositions.clear();
             }
             if (removeConsumersFromRecentJoinedConsumers() || !redeliveryMessages.isEmpty()) {
                 readMoreEntries();
@@ -157,19 +188,13 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
         }
     }
 
-    private static final FastThreadLocal<Map<Consumer, List<Entry>>> localGroupedEntries =
-            new FastThreadLocal<Map<Consumer, List<Entry>>>() {
-                @Override
-                protected Map<Consumer, List<Entry>> initialValue() throws Exception {
-                    return new HashMap<>();
-                }
-            };
-
     @Override
     protected synchronized boolean trySendMessagesToConsumers(ReadType readType, List<Entry> entries) {
+        lastNumberOfEntriesProcessed = 0;
         long totalMessagesSent = 0;
         long totalBytesSent = 0;
         long totalEntries = 0;
+        long totalEntriesProcessed = 0;
         int entriesCount = entries.size();
 
         // Trigger read more messages
@@ -183,18 +208,12 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
             return false;
         }
 
-        // A corner case that we have to retry a readMoreEntries in order to preserver order delivery.
-        // This may happen when consumer closed. See issue #12885 for details.
         if (!allowOutOfOrderDelivery) {
-            NavigableSet<PositionImpl> messagesToReplayNow = this.getMessagesToReplayNow(1);
-            if (messagesToReplayNow != null && !messagesToReplayNow.isEmpty()) {
-                PositionImpl replayPosition = messagesToReplayNow.first();
-
-                // We have received a message potentially from the delayed tracker and, since we're not using it
-                // right now, it needs to be added to the redelivery tracker or we won't attempt anymore to
-                // resend it (until we disconnect consumer).
-                redeliveryMessages.add(replayPosition.getLedgerId(), replayPosition.getEntryId());
-
+            // A corner case that we have to retry a readMoreEntries in order to preserver order delivery.
+            // This may happen when consumer closed. See issue #12885 for details.
+            Optional<Position> firstReplayPosition = getFirstPositionInReplay();
+            if (firstReplayPosition.isPresent()) {
+                Position replayPosition = firstReplayPosition.get();
                 if (this.minReplayedPosition != null) {
                     // If relayPosition is a new entry wither smaller position is inserted for redelivery during this
                     // async read, it is possible that this relayPosition should dispatch to consumer first. So in
@@ -215,144 +234,400 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                         } else if (readType == ReadType.Replay) {
                             entries.forEach(Entry::release);
                         }
+                        skipNextBackoff = true;
                         return true;
                     }
                 }
             }
         }
 
-        final Map<Consumer, List<Entry>> groupedEntries = localGroupedEntries.get();
-        groupedEntries.clear();
-        final Map<Consumer, Set<Integer>> consumerStickyKeyHashesMap = new HashMap<>();
+        if (recentlyJoinedConsumerTrackingRequired) {
+            // Update if the markDeletePosition move forward
+            updateIfNeededAndGetLastSentPosition();
 
-        for (Entry entry : entries) {
-            int stickyKeyHash = getStickyKeyHash(entry);
-            Consumer c = selector.select(stickyKeyHash);
-            if (c != null) {
-                groupedEntries.computeIfAbsent(c, k -> new ArrayList<>()).add(entry);
-                consumerStickyKeyHashesMap.computeIfAbsent(c, k -> new HashSet<>()).add(stickyKeyHash);
-            } else {
-                addMessageToReplay(entry.getLedgerId(), entry.getEntryId(), stickyKeyHash);
-                entry.release();
+            // Should not access to individualDeletedMessages from outside managed cursor
+            // because it doesn't guarantee thread safety.
+            if (lastSentPosition == null) {
+                if (cursor.getMarkDeletedPosition() != null) {
+                    lastSentPosition = ((ManagedCursorImpl) cursor)
+                            .processIndividuallyDeletedMessagesAndGetMarkDeletedPosition(range -> {
+                                final Position lower = range.lowerEndpoint();
+                                final Position upper = range.upperEndpoint();
+                                individuallySentPositions.addOpenClosed(lower.getLedgerId(), lower.getEntryId(),
+                                        upper.getLedgerId(), upper.getEntryId());
+                                return true;
+                            });
+                }
             }
         }
 
-        AtomicInteger keyNumbers = new AtomicInteger(groupedEntries.size());
+        // returns a boolean indicating whether look-ahead could be useful, when there's a consumer
+        // with available permits, and it's not able to make progress because of blocked hashes.
+        MutableBoolean triggerLookAhead = new MutableBoolean();
+        // filter and group the entries by consumer for dispatching
+        final Map<Consumer, List<Entry>> entriesByConsumerForDispatching =
+                filterAndGroupEntriesForDispatching(entries, readType, triggerLookAhead);
 
-        int currentThreadKeyNumber = groupedEntries.size();
-        if (currentThreadKeyNumber == 0) {
-            currentThreadKeyNumber = -1;
-        }
-        for (Map.Entry<Consumer, List<Entry>> current : groupedEntries.entrySet()) {
+        AtomicInteger remainingConsumersToFinishSending = new AtomicInteger(entriesByConsumerForDispatching.size());
+        for (Map.Entry<Consumer, List<Entry>> current : entriesByConsumerForDispatching.entrySet()) {
             Consumer consumer = current.getKey();
-            assert consumer != null; // checked when added to groupedEntries
-            List<Entry> entriesWithSameKey = current.getValue();
-            int entriesWithSameKeyCount = entriesWithSameKey.size();
-            int availablePermits = Math.max(consumer.getAvailablePermits(), 0);
-            if (consumer.getMaxUnackedMessages() > 0) {
-                int remainUnAckedMessages =
-                        // Avoid negative number
-                        Math.max(consumer.getMaxUnackedMessages() - consumer.getUnackedMessages(), 0);
-                availablePermits = Math.min(availablePermits, remainUnAckedMessages);
-            }
-            int maxMessagesForC = Math.min(entriesWithSameKeyCount, availablePermits);
-            int messagesForC = getRestrictedMaxEntriesForConsumer(consumer, entriesWithSameKey, maxMessagesForC,
-                    readType, consumerStickyKeyHashesMap.get(consumer));
+            List<Entry> entriesForConsumer = current.getValue();
             if (log.isDebugEnabled()) {
                 log.debug("[{}] select consumer {} with messages num {}, read type is {}",
-                        name, consumer.consumerName(), messagesForC, readType);
+                        name, consumer.consumerName(), entriesForConsumer.size(), readType);
             }
-
-            if (messagesForC < entriesWithSameKeyCount) {
-                // We are not able to push all the messages with given key to its consumer,
-                // so we discard for now and mark them for later redelivery
-                for (int i = messagesForC; i < entriesWithSameKeyCount; i++) {
-                    Entry entry = entriesWithSameKey.get(i);
-                    long stickyKeyHash = getStickyKeyHash(entry);
-                    addMessageToReplay(entry.getLedgerId(), entry.getEntryId(), stickyKeyHash);
-                    entry.release();
-                    entriesWithSameKey.set(i, null);
-                }
-            }
-
-            if (messagesForC > 0) {
+            final ManagedLedger managedLedger = cursor.getManagedLedger();
+            for (Entry entry : entriesForConsumer) {
                 // remove positions first from replay list first : sendMessages recycles entries
                 if (readType == ReadType.Replay) {
-                    for (int i = 0; i < messagesForC; i++) {
-                        Entry entry = entriesWithSameKey.get(i);
-                        redeliveryMessages.remove(entry.getLedgerId(), entry.getEntryId());
+                    redeliveryMessages.remove(entry.getLedgerId(), entry.getEntryId());
+                }
+                // Add positions to individuallySentPositions if necessary
+                if (recentlyJoinedConsumerTrackingRequired) {
+                    final Position position = entry.getPosition();
+                    // Store to individuallySentPositions even if lastSentPosition is null
+                    if ((lastSentPosition == null || position.compareTo(lastSentPosition) > 0)
+                            && !individuallySentPositions.contains(position.getLedgerId(), position.getEntryId())) {
+                        final Position previousPosition = managedLedger.getPreviousPosition(position);
+                        individuallySentPositions.addOpenClosed(previousPosition.getLedgerId(),
+                                previousPosition.getEntryId(), position.getLedgerId(), position.getEntryId());
                     }
                 }
+            }
 
-                SendMessageInfo sendMessageInfo = SendMessageInfo.getThreadLocal();
-                EntryBatchSizes batchSizes = EntryBatchSizes.get(messagesForC);
-                EntryBatchIndexesAcks batchIndexesAcks = EntryBatchIndexesAcks.get(messagesForC);
-                totalEntries += filterEntriesForConsumer(entriesWithSameKey, batchSizes, sendMessageInfo,
-                        batchIndexesAcks, cursor, readType == ReadType.Replay, consumer);
+            SendMessageInfo sendMessageInfo = SendMessageInfo.getThreadLocal();
+            EntryBatchSizes batchSizes = EntryBatchSizes.get(entriesForConsumer.size());
+            EntryBatchIndexesAcks batchIndexesAcks = EntryBatchIndexesAcks.get(entriesForConsumer.size());
+            totalEntries += filterEntriesForConsumer(entriesForConsumer, batchSizes, sendMessageInfo,
+                    batchIndexesAcks, cursor, readType == ReadType.Replay, consumer);
+            totalEntriesProcessed += entriesForConsumer.size();
+            consumer.sendMessages(entriesForConsumer, batchSizes, batchIndexesAcks,
+                    sendMessageInfo.getTotalMessages(),
+                    sendMessageInfo.getTotalBytes(), sendMessageInfo.getTotalChunkedMessages(),
+                    getRedeliveryTracker()).addListener(future -> {
+                if (future.isDone() && remainingConsumersToFinishSending.decrementAndGet() == 0) {
+                    readMoreEntries();
+                }
+            });
 
-                consumer.sendMessages(entriesWithSameKey, batchSizes, batchIndexesAcks,
-                        sendMessageInfo.getTotalMessages(),
-                        sendMessageInfo.getTotalBytes(), sendMessageInfo.getTotalChunkedMessages(),
-                        getRedeliveryTracker()).addListener(future -> {
-                    if (future.isDone() && keyNumbers.decrementAndGet() == 0) {
-                        readMoreEntries();
+            TOTAL_AVAILABLE_PERMITS_UPDATER.getAndAdd(this,
+                    -(sendMessageInfo.getTotalMessages() - batchIndexesAcks.getTotalAckedIndexCount()));
+            totalMessagesSent += sendMessageInfo.getTotalMessages();
+            totalBytesSent += sendMessageInfo.getTotalBytes();
+        }
+
+        // Update the last sent position and remove ranges from individuallySentPositions if necessary
+        if (recentlyJoinedConsumerTrackingRequired && lastSentPosition != null) {
+            final ManagedLedger managedLedger = cursor.getManagedLedger();
+            com.google.common.collect.Range<Position> range = individuallySentPositions.firstRange();
+
+            // If the upper bound is before the last sent position, we need to move ahead as these
+            // individuallySentPositions are now irrelevant.
+            if (range != null && range.upperEndpoint().compareTo(lastSentPosition) <= 0) {
+                individuallySentPositions.removeAtMost(lastSentPosition.getLedgerId(),
+                        lastSentPosition.getEntryId());
+                range = individuallySentPositions.firstRange();
+            }
+
+            if (range != null) {
+                // If the lowerBound is ahead of the last sent position,
+                // verify if there are any entries in-between.
+                if (range.lowerEndpoint().compareTo(lastSentPosition) <= 0 || managedLedger
+                        .getNumberOfEntries(com.google.common.collect.Range.openClosed(lastSentPosition,
+                                range.lowerEndpoint())) <= 0) {
+                    if (log.isDebugEnabled()) {
+                        log.debug("[{}] Found a position range to last sent: {}", name, range);
                     }
-                });
+                    Position newLastSentPosition = range.upperEndpoint();
+                    Position positionAfterNewLastSent = managedLedger
+                            .getNextValidPosition(newLastSentPosition);
+                    // sometime ranges are connected but belongs to different ledgers
+                    // so, they are placed sequentially
+                    // eg: (2:10..3:15] can be returned as (2:10..2:15],[3:0..3:15].
+                    // So, try to iterate over connected range and found the last non-connected range
+                    // which gives new last sent position.
+                    final Position lastConfirmedEntrySnapshot = managedLedger.getLastConfirmedEntry();
+                    if (lastConfirmedEntrySnapshot != null) {
+                        while (positionAfterNewLastSent.compareTo(lastConfirmedEntrySnapshot) <= 0) {
+                            if (individuallySentPositions.contains(positionAfterNewLastSent.getLedgerId(),
+                                    positionAfterNewLastSent.getEntryId())) {
+                                range = individuallySentPositions.rangeContaining(
+                                        positionAfterNewLastSent.getLedgerId(), positionAfterNewLastSent.getEntryId());
+                                newLastSentPosition = range.upperEndpoint();
+                                positionAfterNewLastSent = managedLedger.getNextValidPosition(newLastSentPosition);
+                                // check if next valid position is also deleted and part of the deleted-range
+                                continue;
+                            }
+                            break;
+                        }
+                    }
 
-                TOTAL_AVAILABLE_PERMITS_UPDATER.getAndAdd(this,
-                        -(sendMessageInfo.getTotalMessages() - batchIndexesAcks.getTotalAckedIndexCount()));
-                totalMessagesSent += sendMessageInfo.getTotalMessages();
-                totalBytesSent += sendMessageInfo.getTotalBytes();
-            } else {
-                currentThreadKeyNumber = keyNumbers.decrementAndGet();
+                    if (lastSentPosition.compareTo(newLastSentPosition) < 0) {
+                        lastSentPosition = newLastSentPosition;
+                    }
+                    individuallySentPositions.removeAtMost(lastSentPosition.getLedgerId(),
+                            lastSentPosition.getEntryId());
+                }
             }
         }
+
+        lastNumberOfEntriesProcessed = (int) totalEntriesProcessed;
 
         // acquire message-dispatch permits for already delivered messages
         acquirePermitsForDeliveredMessages(topic, cursor, totalEntries, totalMessagesSent, totalBytesSent);
 
-        if (totalMessagesSent == 0 && (recentlyJoinedConsumers == null || recentlyJoinedConsumers.isEmpty())) {
-            // This means, that all the messages we've just read cannot be dispatched right now.
-            // This condition can only happen when:
-            //  1. We have consumers ready to accept messages (otherwise the would not haven been triggered)
-            //  2. All keys in the current set of messages are routing to consumers that are currently busy
-            //
-            // The solution here is to move on and read next batch of messages which might hopefully contain
-            // also keys meant for other consumers.
-            //
-            // We do it unless that are "recently joined consumers". In that case, we would be looking
-            // ahead in the stream while the new consumers are not ready to accept the new messages,
-            // therefore would be most likely only increase the distance between read-position and mark-delete
-            // position.
-            isDispatcherStuckOnReplays = true;
-            return true;
-        }  else if (currentThreadKeyNumber == 0) {
+        // trigger read more messages if necessary
+        if (triggerLookAhead.booleanValue()) {
+            // When all messages get filtered and no messages are sent, we should read more entries, "look ahead"
+            // so that a possible next batch of messages might contain messages that can be dispatched.
+            // This is done only when there's a consumer with available permits, and it's not able to make progress
+            // because of blocked hashes. Without this rule we would be looking ahead in the stream while the
+            // new consumers are not ready to accept the new messages,
+            // therefore would be most likely only increase the distance between read-position and mark-delete position.
+            skipNextReplayToTriggerLookAhead = true;
+            // skip backoff delay before reading ahead in the "look ahead" mode to prevent any additional latency
+            skipNextBackoff = true;
             return true;
         }
+
+        // if no messages were sent to consumers, we should retry
+        if (totalEntries == 0) {
+            return true;
+        }
+
         return false;
     }
 
-    private int getRestrictedMaxEntriesForConsumer(Consumer consumer, List<Entry> entries, int maxMessages,
-            ReadType readType, Set<Integer> stickyKeyHashes) {
-        if (maxMessages == 0) {
-            return 0;
+    private boolean isReplayQueueSizeBelowLimit() {
+        return redeliveryMessages.size() < getEffectiveLookAheadLimit();
+    }
+
+    private int getEffectiveLookAheadLimit() {
+        return getEffectiveLookAheadLimit(serviceConfig, consumerList.size());
+    }
+
+    static int getEffectiveLookAheadLimit(ServiceConfiguration serviceConfig, int consumerCount) {
+        int perConsumerLimit = serviceConfig.getKeySharedLookAheadMsgInReplayThresholdPerConsumer();
+        int perSubscriptionLimit = serviceConfig.getKeySharedLookAheadMsgInReplayThresholdPerSubscription();
+        int effectiveLimit;
+        if (perConsumerLimit <= 0) {
+            effectiveLimit = perSubscriptionLimit;
+        } else {
+            effectiveLimit = perConsumerLimit * consumerCount;
+            if (perSubscriptionLimit > 0 && perSubscriptionLimit < effectiveLimit) {
+                effectiveLimit = perSubscriptionLimit;
+            }
         }
-        if (readType == ReadType.Normal && stickyKeyHashes != null
-                && redeliveryMessages.containsStickyKeyHashes(stickyKeyHashes)) {
-            // If redeliveryMessages contains messages that correspond to the same hash as the messages
-            // that the dispatcher is trying to send, do not send those messages for order guarantee
-            return 0;
+        if (effectiveLimit <= 0) {
+            // use max unacked messages limits if key shared look-ahead limits are disabled
+            int maxUnackedMessagesPerSubscription = serviceConfig.getMaxUnackedMessagesPerSubscription();
+            if (maxUnackedMessagesPerSubscription <= 0) {
+                maxUnackedMessagesPerSubscription = Integer.MAX_VALUE;
+            }
+            int maxUnackedMessagesByConsumers = consumerCount * serviceConfig.getMaxUnackedMessagesPerConsumer();
+            if (maxUnackedMessagesByConsumers <= 0) {
+                maxUnackedMessagesByConsumers = Integer.MAX_VALUE;
+            }
+            effectiveLimit = Math.min(maxUnackedMessagesPerSubscription, maxUnackedMessagesByConsumers);
         }
+        return effectiveLimit;
+    }
+
+    // groups the entries by consumer and filters out the entries that should not be dispatched
+    // the entries are handled in the order they are received instead of first grouping them by consumer and
+    // then filtering them
+    private Map<Consumer, List<Entry>> filterAndGroupEntriesForDispatching(List<Entry> entries, ReadType readType,
+                                                                           MutableBoolean triggerLookAhead) {
+        // entries grouped by consumer
+        Map<Consumer, List<Entry>> entriesGroupedByConsumer = new HashMap<>();
+        // permits for consumer, permits are for entries/batches
+        Map<Consumer, MutableInt> permitsForConsumer = new HashMap<>();
+        // maxLastSentPosition cache for consumers, used when recently joined consumers exist
+        boolean hasRecentlyJoinedConsumers = hasRecentlyJoinedConsumers();
+        Map<Consumer, Position> maxLastSentPositionCache = hasRecentlyJoinedConsumers ? new HashMap<>() : null;
+        boolean lookAheadAllowed = isReplayQueueSizeBelowLimit();
+        // in normal read mode, keep track of consumers that are blocked by hash, to check if look-ahead could be useful
+        Set<Consumer> blockedByHashConsumers = lookAheadAllowed && readType == ReadType.Normal ? new HashSet<>() : null;
+        // in replay read mode, keep track of consumers for entries, used for look-ahead check
+        Set<Consumer> consumersForEntriesForLookaheadCheck = lookAheadAllowed ? new HashSet<>() : null;
+
+        for (Entry entry : entries) {
+            int stickyKeyHash = getStickyKeyHash(entry);
+            Consumer consumer = selector.select(stickyKeyHash);
+            MutableBoolean blockedByHash = null;
+            boolean dispatchEntry = false;
+            if (consumer != null) {
+                if (lookAheadAllowed) {
+                    consumersForEntriesForLookaheadCheck.add(consumer);
+                }
+                Position maxLastSentPosition = hasRecentlyJoinedConsumers ? maxLastSentPositionCache.computeIfAbsent(
+                        consumer, __ -> resolveMaxLastSentPositionForRecentlyJoinedConsumer(consumer, readType)) : null;
+                blockedByHash = lookAheadAllowed && readType == ReadType.Normal ? new MutableBoolean(false) : null;
+                MutableInt permits =
+                        permitsForConsumer.computeIfAbsent(consumer,
+                                k -> new MutableInt(getAvailablePermits(consumer)));
+                // a consumer was found for the sticky key hash and the entry can be dispatched
+                if (permits.intValue() > 0 && canDispatchEntry(entry, readType, stickyKeyHash,
+                        maxLastSentPosition, blockedByHash)) {
+                    // decrement the permits for the consumer
+                    permits.decrement();
+                    // allow the entry to be dispatched
+                    dispatchEntry = true;
+                }
+            }
+            if (dispatchEntry) {
+                // add the entry to consumer's entry list for dispatching
+                List<Entry> consumerEntries =
+                        entriesGroupedByConsumer.computeIfAbsent(consumer, k -> new ArrayList<>());
+                consumerEntries.add(entry);
+            } else {
+                if (blockedByHash != null && blockedByHash.isTrue()) {
+                    // the entry is blocked by hash, add the consumer to the blocked set
+                    blockedByHashConsumers.add(consumer);
+                }
+                // add the message to replay
+                addMessageToReplay(entry.getLedgerId(), entry.getEntryId(), stickyKeyHash);
+                // release the entry as it will not be dispatched
+                entry.release();
+            }
+        }
+        //
+        // determine whether look-ahead could be useful for making more progress
+        //
+        if (lookAheadAllowed && entriesGroupedByConsumer.isEmpty()) {
+            // check if look-ahead could be useful for the consumers that are blocked by a hash that is in the replay
+            // queue. This check applies only to the normal read mode.
+            if (readType == ReadType.Normal) {
+                for (Consumer consumer : blockedByHashConsumers) {
+                    // if the consumer isn't in the entriesGroupedByConsumer, it means that it won't receive any
+                    // messages
+                    // if it has available permits, then look-ahead could be useful for this particular consumer
+                    // to make further progress
+                    if (!entriesGroupedByConsumer.containsKey(consumer)
+                            && permitsForConsumer.get(consumer).intValue() > 0) {
+                        triggerLookAhead.setTrue();
+                        break;
+                    }
+                }
+            }
+            // check if look-ahead could be useful for other consumers
+            if (!triggerLookAhead.booleanValue()) {
+                for (Consumer consumer : getConsumers()) {
+                    // filter out the consumers that are already checked when the entries were processed for entries
+                    if (!consumersForEntriesForLookaheadCheck.contains(consumer)) {
+                        // if another consumer has available permits, then look-ahead could be useful
+                        if (getAvailablePermits(consumer) > 0) {
+                            triggerLookAhead.setTrue();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return entriesGroupedByConsumer;
+    }
+
+    // checks if the entry can be dispatched to the consumer
+    private boolean canDispatchEntry(Entry entry,
+                                     ReadType readType, int stickyKeyHash, Position maxLastSentPosition,
+                                     MutableBoolean blockedByHash) {
+        // check if the entry can be replayed to a recently joined consumer
+        if (maxLastSentPosition != null && entry.getPosition().compareTo(maxLastSentPosition) > 0) {
+            return false;
+        }
+
+        // If redeliveryMessages contains messages that correspond to the same hash as the entry to be dispatched
+        // do not send those messages for order guarantee
+        if (readType == ReadType.Normal && redeliveryMessages.containsStickyKeyHash(stickyKeyHash)) {
+            if (blockedByHash != null) {
+                blockedByHash.setTrue();
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Creates a filter for replaying messages. The filter is stateful and shouldn't be cached or reused.
+     * @see PersistentDispatcherMultipleConsumers#createFilterForReplay()
+     */
+    @Override
+    protected Predicate<Position> createFilterForReplay() {
+        return new ReplayPositionFilter();
+    }
+
+    /**
+     * Filter for replaying messages. The filter is stateful for a single invocation and shouldn't be cached, shared
+     * or reused. This is a short-lived object, and optimizing it for the "no garbage" coding style of Pulsar is
+     * unnecessary since the JVM can optimize allocations for short-lived objects.
+     */
+    private class ReplayPositionFilter implements Predicate<Position> {
+        // tracks the available permits for each consumer for the duration of the filter usage
+        // the filter is stateful and shouldn't be shared or reused later
+        private final Map<Consumer, MutableInt> availablePermitsMap = new HashMap<>();
+        private final Map<Consumer, Position> maxLastSentPositionCache =
+                hasRecentlyJoinedConsumers() ? new HashMap<>() : null;
+
+        @Override
+        public boolean test(Position position) {
+            // if out of order delivery is allowed, then any position will be replayed
+            if (isAllowOutOfOrderDelivery()) {
+                return true;
+            }
+            // lookup the sticky key hash for the entry at the replay position
+            Long stickyKeyHash = redeliveryMessages.getHash(position.getLedgerId(), position.getEntryId());
+            if (stickyKeyHash == null) {
+                // the sticky key hash is missing for delayed messages, the filtering will happen at the time of
+                // dispatch after reading the entry from the ledger
+                if (log.isDebugEnabled()) {
+                    log.debug("[{}] replay of entry at position {} doesn't contain sticky key hash.", name, position);
+                }
+                return true;
+            }
+            // find the consumer for the sticky key hash
+            Consumer consumer = selector.select(stickyKeyHash.intValue());
+            // skip replaying the message position if there's no assigned consumer
+            if (consumer == null) {
+                return false;
+            }
+            // lookup the available permits for the consumer
+            MutableInt availablePermits =
+                    availablePermitsMap.computeIfAbsent(consumer,
+                            k -> new MutableInt(getAvailablePermits(consumer)));
+            // skip replaying the message position if the consumer has no available permits
+            if (availablePermits.intValue() <= 0) {
+                return false;
+            }
+            // check if the entry position can be replayed to a recently joined consumer
+            Position maxLastSentPosition = maxLastSentPositionCache != null
+                    ? maxLastSentPositionCache.computeIfAbsent(consumer, __ ->
+                    resolveMaxLastSentPositionForRecentlyJoinedConsumer(consumer, ReadType.Replay))
+                    : null;
+            if (maxLastSentPosition != null && position.compareTo(maxLastSentPosition) > 0) {
+                return false;
+            }
+            availablePermits.decrement();
+            return true;
+        }
+    }
+
+    /**
+     * Contains the logic to resolve the max last sent position for a consumer
+     * when the consumer has recently joined. This is only applicable for key shared mode when
+     * allowOutOfOrderDelivery=false.
+     */
+    private Position resolveMaxLastSentPositionForRecentlyJoinedConsumer(Consumer consumer, ReadType readType) {
         if (recentlyJoinedConsumers == null) {
-            return maxMessages;
+            return null;
         }
         removeConsumersFromRecentJoinedConsumers();
-        PositionImpl maxReadPosition = recentlyJoinedConsumers.get(consumer);
+        Position maxLastSentPosition = recentlyJoinedConsumers.get(consumer);
         // At this point, all the old messages were already consumed and this consumer
         // is now ready to receive any message
-        if (maxReadPosition == null) {
+        if (maxLastSentPosition == null) {
             // The consumer has not recently joined, so we can send all messages
-            return maxMessages;
+            return null;
         }
 
         // If the read type is Replay, we should avoid send messages that hold by other consumer to the new consumers,
@@ -369,24 +644,16 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
         // But the message [2,3] should not dispatch to consumer2.
 
         if (readType == ReadType.Replay) {
-            PositionImpl minReadPositionForRecentJoinedConsumer = recentlyJoinedConsumers.values().iterator().next();
-            if (minReadPositionForRecentJoinedConsumer != null
-                    && minReadPositionForRecentJoinedConsumer.compareTo(maxReadPosition) < 0) {
-                maxReadPosition = minReadPositionForRecentJoinedConsumer;
-            }
-        }
-        // Here, the consumer is one that has recently joined, so we can only send messages that were
-        // published before it has joined.
-        for (int i = 0; i < maxMessages; i++) {
-            if (((PositionImpl) entries.get(i).getPosition()).compareTo(maxReadPosition) >= 0) {
-                // We have already crossed the divider line. All messages in the list are now
-                // newer than what we can currently dispatch to this consumer
-                return i;
+            Position minLastSentPositionForRecentJoinedConsumer = recentlyJoinedConsumers.values().iterator().next();
+            if (minLastSentPositionForRecentJoinedConsumer != null
+                    && minLastSentPositionForRecentJoinedConsumer.compareTo(maxLastSentPosition) < 0) {
+                maxLastSentPosition = minLastSentPositionForRecentJoinedConsumer;
             }
         }
 
-        return maxMessages;
+        return maxLastSentPosition;
     }
+
 
     @Override
     public void markDeletePositionMoveForward() {
@@ -394,7 +661,7 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
         // from the delete operation that was completed
         topic.getBrokerService().getTopicOrderedExecutor().execute(() -> {
             synchronized (PersistentStickyKeyDispatcherMultipleConsumers.this) {
-                if (recentlyJoinedConsumers != null && !recentlyJoinedConsumers.isEmpty()
+                if (hasRecentlyJoinedConsumers()
                         && removeConsumersFromRecentJoinedConsumers()) {
                     // After we process acks, we need to check whether the mark-delete position was advanced and we
                     // can finally read more messages. It's safe to call readMoreEntries() multiple times.
@@ -404,16 +671,21 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
         });
     }
 
+    private boolean hasRecentlyJoinedConsumers() {
+        return !MapUtils.isEmpty(recentlyJoinedConsumers);
+    }
+
     private boolean removeConsumersFromRecentJoinedConsumers() {
-        Iterator<Map.Entry<Consumer, PositionImpl>> itr = recentlyJoinedConsumers.entrySet().iterator();
+        if (MapUtils.isEmpty(recentlyJoinedConsumers)) {
+            return false;
+        }
+        Iterator<Map.Entry<Consumer, Position>> itr = recentlyJoinedConsumers.entrySet().iterator();
         boolean hasConsumerRemovedFromTheRecentJoinedConsumers = false;
-        PositionImpl mdp = (PositionImpl) cursor.getMarkDeletedPosition();
+        Position mdp = cursor.getMarkDeletedPosition();
         if (mdp != null) {
-            PositionImpl nextPositionOfTheMarkDeletePosition =
-                    ((ManagedLedgerImpl) cursor.getManagedLedger()).getNextValidPosition(mdp);
             while (itr.hasNext()) {
-                Map.Entry<Consumer, PositionImpl> entry = itr.next();
-                if (entry.getValue().compareTo(nextPositionOfTheMarkDeletePosition) <= 0) {
+                Map.Entry<Consumer, Position> entry = itr.next();
+                if (entry.getValue().compareTo(mdp) <= 0) {
                     itr.remove();
                     hasConsumerRemovedFromTheRecentJoinedConsumers = true;
                 } else {
@@ -424,17 +696,114 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
         return hasConsumerRemovedFromTheRecentJoinedConsumers;
     }
 
-    @Override
-    protected synchronized NavigableSet<PositionImpl> getMessagesToReplayNow(int maxMessagesToRead) {
-        if (isDispatcherStuckOnReplays) {
-            // If we're stuck on replay, we want to move forward reading on the topic (until the overall max-unacked
-            // messages kicks in), instead of keep replaying the same old messages, since the consumer that these
-            // messages are routing to might be busy at the moment
-            this.isDispatcherStuckOnReplays = false;
-            return Collections.emptyNavigableSet();
-        } else {
-            return super.getMessagesToReplayNow(maxMessagesToRead);
+    @Nullable
+    private synchronized Position updateIfNeededAndGetLastSentPosition() {
+        if (lastSentPosition == null) {
+            return null;
         }
+        final Position mdp = cursor.getMarkDeletedPosition();
+        if (mdp != null && mdp.compareTo(lastSentPosition) > 0) {
+            lastSentPosition = mdp;
+        }
+        return lastSentPosition;
+    }
+
+    /**
+     * The dispatcher will skip replaying messages when all messages in the replay queue are filtered out when
+     * skipNextReplayToTriggerLookAhead=true. The flag gets resetted after the call.
+     *
+     * If we're stuck on replay, we want to move forward reading on the topic (until the configured look ahead
+     * limits kick in), instead of keep replaying the same old messages, since the consumer that these
+     * messages are routing to might be busy at the moment.
+     *
+     * Please see {@link ServiceConfiguration#getKeySharedLookAheadMsgInReplayThresholdPerConsumer} and
+     * {@link ServiceConfiguration#getKeySharedLookAheadMsgInReplayThresholdPerSubscription} for configuring the limits.
+     */
+    @Override
+    protected synchronized boolean canReplayMessages() {
+        if (skipNextReplayToTriggerLookAhead) {
+            skipNextReplayToTriggerLookAhead = false;
+            return false;
+        }
+        return true;
+    }
+
+    private int getAvailablePermits(Consumer c) {
+        // skip consumers that are currently closing
+        if (!c.cnx().isActive()) {
+            return 0;
+        }
+        int availablePermits = Math.max(c.getAvailablePermits(), 0);
+        if (availablePermits > 0 && c.getMaxUnackedMessages() > 0) {
+            // Calculate the maximum number of additional unacked messages allowed
+            int maxAdditionalUnackedMessages = Math.max(c.getMaxUnackedMessages() - c.getUnackedMessages(), 0);
+            if (maxAdditionalUnackedMessages == 0) {
+                // if the consumer has reached the max unacked messages, then no more messages can be dispatched
+                return 0;
+            }
+            // Estimate the remaining permits based on the average messages per entry
+            // add "avgMessagesPerEntry - 1" to round up the division to the next integer without the need to use
+            // floating point arithmetic
+            int avgMessagesPerEntry = Math.max(c.getAvgMessagesPerEntry(), 1);
+            int estimatedRemainingPermits =
+                    (maxAdditionalUnackedMessages + avgMessagesPerEntry - 1) / avgMessagesPerEntry;
+            // return the minimum of current available permits and estimated remaining permits
+            return Math.min(availablePermits, estimatedRemainingPermits);
+        } else {
+            return availablePermits;
+        }
+    }
+
+    /**
+     * For Key_Shared subscription, the dispatcher will not read more entries while there are pending reads
+     * or pending replay reads.
+     * @return true if there are no pending reads or pending replay reads
+     */
+    @Override
+    protected boolean doesntHavePendingRead() {
+        return !havePendingRead && !havePendingReplayRead;
+    }
+
+    /**
+     * For Key_Shared subscription, the dispatcher will not attempt to read more entries if the replay queue size
+     * has reached the limit or if there are no consumers with permits.
+     */
+    @Override
+    protected boolean isNormalReadAllowed() {
+        // don't allow reading more if the replay queue size has reached the limit
+        if (!isReplayQueueSizeBelowLimit()) {
+            return false;
+        }
+        for (Consumer consumer : consumerList) {
+            // skip blocked consumers
+            if (consumer == null || consumer.isBlocked()) {
+                continue;
+            }
+            // before reading more, check that there's at least one consumer that has permits
+            if (getAvailablePermits(consumer) > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    protected int getMaxEntriesReadLimit() {
+        // prevent the redelivery queue from growing over the limit by limiting the number of entries to read
+        // to the maximum number of entries that can be added to the redelivery queue
+        return Math.max(getEffectiveLookAheadLimit() - redeliveryMessages.size(), 1);
+    }
+
+    /**
+     * When a normal read is not allowed, the dispatcher will reschedule a read with a backoff.
+     */
+    @Override
+    protected void handleNormalReadNotAllowed() {
+        if (log.isDebugEnabled()) {
+            log.debug("[{}] [{}] Skipping read for the topic since normal read isn't allowed. "
+                    + "Rescheduling a read with a backoff.", topic.getName(), getSubscriptionName());
+        }
+        reScheduleReadWithBackoff();
     }
 
     @Override
@@ -460,8 +829,32 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                 && ksm.isAllowOutOfOrderDelivery() == this.allowOutOfOrderDelivery);
     }
 
-    public LinkedHashMap<Consumer, PositionImpl> getRecentlyJoinedConsumers() {
+    public LinkedHashMap<Consumer, Position> getRecentlyJoinedConsumers() {
         return recentlyJoinedConsumers;
+    }
+
+    public synchronized String getLastSentPosition() {
+        if (lastSentPosition == null) {
+            return null;
+        }
+        return lastSentPosition.toString();
+    }
+
+    @VisibleForTesting
+    public Position getLastSentPositionField() {
+        return lastSentPosition;
+    }
+
+    public synchronized String getIndividuallySentPositions() {
+        if (individuallySentPositions == null) {
+            return null;
+        }
+        return individuallySentPositions.toString();
+    }
+
+    @VisibleForTesting
+    public LongPairRangeSet<Position> getIndividuallySentPositionsField() {
+        return individuallySentPositions;
     }
 
     public Map<Consumer, List<Range>> getConsumerKeyHashRanges() {
@@ -469,5 +862,4 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
     }
 
     private static final Logger log = LoggerFactory.getLogger(PersistentStickyKeyDispatcherMultipleConsumers.class);
-
 }

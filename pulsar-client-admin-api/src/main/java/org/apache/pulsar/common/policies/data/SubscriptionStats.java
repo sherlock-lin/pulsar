@@ -46,7 +46,7 @@ public interface SubscriptionStats {
     double getMessageAckRate();
 
     /** Chunked message dispatch rate. */
-    int getChunkedMessageRate();
+    double getChunkedMessageRate();
 
     /** Number of entries in the subscription backlog. */
     long getMsgBacklog();
@@ -65,6 +65,9 @@ public interface SubscriptionStats {
 
     /** Number of delayed messages currently being tracked. */
     long getMsgDelayed();
+
+    /** Number of messages registered for replay. */
+    long getMsgInReplay();
 
     /**
      * Number of unacknowledged messages for the subscription, where an unacknowledged message is one that has been
@@ -117,6 +120,12 @@ public interface SubscriptionStats {
 
     /** This is for Key_Shared subscription to get the recentJoinedConsumers in the Key_Shared subscription. */
     Map<String, String> getConsumersAfterMarkDeletePosition();
+
+    /** The last sent position of the cursor. This is for Key_Shared subscription. */
+    String getLastSentPosition();
+
+    /** Set of individually sent ranges. This is for Key_Shared subscription. */
+    String getIndividuallySentPositions();
 
     /** SubscriptionProperties (key/value strings) associated with this subscribe. */
     Map<String, String> getSubscriptionProperties();

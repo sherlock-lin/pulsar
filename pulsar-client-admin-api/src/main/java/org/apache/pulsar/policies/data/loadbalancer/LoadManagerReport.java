@@ -40,7 +40,7 @@ public interface LoadManagerReport extends ServiceLookupData {
 
     Map<String, NamespaceBundleStats> getBundleStats();
 
-    int getNumTopics();
+    long getNumTopics();
 
     int getNumBundles();
 

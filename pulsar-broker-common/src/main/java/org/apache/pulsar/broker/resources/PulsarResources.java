@@ -19,6 +19,8 @@
 package org.apache.pulsar.broker.resources;
 
 import java.util.Optional;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 import lombok.Getter;
 import org.apache.pulsar.metadata.api.MetadataStore;
 import org.apache.pulsar.metadata.api.MetadataStoreConfig;
@@ -57,14 +59,19 @@ public class PulsarResources {
     public PulsarResources(MetadataStore localMetadataStore, MetadataStore configurationMetadataStore) {
         this(localMetadataStore, configurationMetadataStore, DEFAULT_OPERATION_TIMEOUT_SEC);
     }
+
     public PulsarResources(MetadataStore localMetadataStore, MetadataStore configurationMetadataStore,
-            int operationTimeoutSec) {
-        //如果配置元数据存储不为空，则进行初始化
+                           int operationTimeoutSec) {
+        this(localMetadataStore, configurationMetadataStore, operationTimeoutSec, ForkJoinPool.commonPool());
+    }
+
+    public PulsarResources(MetadataStore localMetadataStore, MetadataStore configurationMetadataStore,
+            int operationTimeoutSec, Executor executor) {
         if (configurationMetadataStore != null) {
             tenantResources = new TenantResources(configurationMetadataStore, operationTimeoutSec);
             clusterResources = new ClusterResources(localMetadataStore, configurationMetadataStore,
                     operationTimeoutSec);
-            namespaceResources = new NamespaceResources(configurationMetadataStore, operationTimeoutSec);
+            namespaceResources = new NamespaceResources(configurationMetadataStore, operationTimeoutSec, executor);
             resourcegroupResources = new ResourceGroupResources(configurationMetadataStore, operationTimeoutSec);
         } else {
             tenantResources = null;
@@ -73,7 +80,6 @@ public class PulsarResources {
             resourcegroupResources = null;
         }
 
-        //如果配置的本地元数据存储不为空，也进行初始化
         if (localMetadataStore != null) {
             dynamicConfigResources = new DynamicConfigurationResources(localMetadataStore, operationTimeoutSec);
             localPolicies = new LocalPoliciesResources(localMetadataStore, operationTimeoutSec);

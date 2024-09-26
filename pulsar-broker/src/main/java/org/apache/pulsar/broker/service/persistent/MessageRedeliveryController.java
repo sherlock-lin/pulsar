@@ -22,9 +22,13 @@ import com.google.common.collect.ComparisonChain;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NavigableSet;
+import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.function.Predicate;
 import javax.annotation.concurrent.NotThreadSafe;
-import org.apache.bookkeeper.mledger.impl.PositionImpl;
+import org.apache.bookkeeper.mledger.Position;
+import org.apache.bookkeeper.mledger.PositionFactory;
 import org.apache.bookkeeper.util.collections.ConcurrentLongLongHashMap;
 import org.apache.pulsar.common.util.collections.ConcurrentLongLongPairHashMap;
 import org.apache.pulsar.common.util.collections.ConcurrentLongLongPairHashMap.LongPair;
@@ -95,6 +99,14 @@ public class MessageRedeliveryController {
         }
     }
 
+    public Long getHash(long ledgerId, long entryId) {
+        LongPair value = hashesToBeBlocked.get(ledgerId, entryId);
+        if (value == null) {
+            return null;
+        }
+        return value.first;
+    }
+
     public void removeAllUpTo(long markDeleteLedgerId, long markDeleteEntryId) {
         if (!allowOutOfOrderDelivery) {
             List<LongPair> keysToRemove = new ArrayList<>();
@@ -137,7 +149,40 @@ public class MessageRedeliveryController {
         return false;
     }
 
-    public NavigableSet<PositionImpl> getMessagesToReplayNow(int maxMessagesToRead) {
-        return messagesToRedeliver.items(maxMessagesToRead, PositionImpl::new);
+    public boolean containsStickyKeyHash(int stickyKeyHash) {
+        return !allowOutOfOrderDelivery && hashesRefCount.containsKey(stickyKeyHash);
+    }
+
+    public Optional<Position> getFirstPositionInReplay() {
+        return messagesToRedeliver.first(PositionFactory::create);
+    }
+
+    /**
+     * Get the messages to replay now.
+     *
+     * @param maxMessagesToRead
+     *            the max messages to read
+     * @param filter
+     *            the filter to use to select the messages to replay
+     * @return the messages to replay now
+     */
+    public NavigableSet<Position> getMessagesToReplayNow(int maxMessagesToRead, Predicate<Position> filter) {
+        NavigableSet<Position> items = new TreeSet<>();
+        messagesToRedeliver.processItems(PositionFactory::create, item -> {
+            if (filter.test(item)) {
+                items.add(item);
+            }
+            return items.size() < maxMessagesToRead;
+        });
+        return items;
+    }
+
+    /**
+     * Get the number of messages registered for replay in the redelivery controller.
+     *
+     * @return number of messages
+     */
+    public int size() {
+        return messagesToRedeliver.size();
     }
 }
