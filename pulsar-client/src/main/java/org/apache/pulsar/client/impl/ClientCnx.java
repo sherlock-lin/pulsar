@@ -524,6 +524,7 @@ public class ClientCnx extends PulsarHandler {
         if (log.isDebugEnabled()) {
             log.debug("{} Received a message from the server: {}", ctx.channel(), cmdMessage);
         }
+        //获取指定的消费者消费消息
         ConsumerImpl<?> consumer = consumers.get(cmdMessage.getConsumerId());
         if (consumer != null) {
             consumer.messageReceived(cmdMessage, headersAndPayload, this);

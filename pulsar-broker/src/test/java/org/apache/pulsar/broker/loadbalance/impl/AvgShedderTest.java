@@ -61,6 +61,7 @@ public class AvgShedderTest {
 
     @Test
     public void testHitHighThreshold() {
+        //TODO 初始化两个Broker的信息
         LoadData loadData = new LoadData();
         BrokerData brokerData1 = initBrokerData();
         BrokerData brokerData2 = initBrokerData();
@@ -90,6 +91,7 @@ public class AvgShedderTest {
         // expect to shed bundles with message rate(in+out) ((10000+10000)-(1000+1000))/2 = 9000
         // each bundle with 450 msg rate in and 450 msg rate out
         // so 9000/(450+450)=10 bundles will be shed
+        //TODO 循环给这三台Broker分配10个Bundle
         for (int i = 0; i < 11; i++) {
             brokerData1.getLocalData().getBundles().add("bundle-" + i);
             BundleData bundle = new BundleData();
